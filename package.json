@@ -1,0 +1,30 @@
+{
+  "name": "testrelic-mcp-server",
+  "version": "1.0.0",
+  "description": "TestRelic MCP Server — AI interface layer for test analytics, user impact correlation, and automated triage",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "dev:http": "cross-env MCP_TRANSPORT=http tsx src/index.ts",
+    "dev:mock": "concurrently \"tsx mock-server/index.ts\" \"tsx src/index.ts\"",
+    "mock": "tsx mock-server/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.5.0",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
