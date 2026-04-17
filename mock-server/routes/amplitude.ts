@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { mockAmplitudeUserCounts, mockAmplitudeSessions } from "../data/amplitude-sessions.js";
+import { mockJourneys } from "../data/journeys.js";
 
 const router = Router();
 
@@ -36,6 +37,21 @@ router.get("/sessions", (req: Request, res: Response) => {
   const page = sessions.slice(0, pageSize);
 
   res.json({ run_id, sessions: page, total: sessions.length });
+});
+
+// GET /amplitude/journeys?project_id=&limit= — v2 parity endpoint
+router.get("/journeys", (req: Request, res: Response) => {
+  const project_id = String(req.query.project_id ?? "");
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const journeys = (mockJourneys[project_id] ?? []).slice(0, limit).map((j) => ({
+    id: j.id,
+    name: j.name,
+    events: j.events,
+    user_count: j.user_count,
+    session_count: j.session_count,
+    last_seen: j.last_seen,
+  }));
+  res.json({ project_id, journeys });
 });
 
 export default router;

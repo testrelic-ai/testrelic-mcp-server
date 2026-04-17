@@ -1,30 +1,45 @@
 {
-  "name": "testrelic-mcp-server",
-  "version": "1.0.0",
-  "description": "TestRelic MCP Server — AI interface layer for test analytics, user impact correlation, and automated triage",
+  "name": "testrelic-mcp-workspace",
+  "version": "2.1.0",
+  "private": true,
+  "description": "TestRelic MCP Server monorepo — main package + IDE extension. All deployment goes through GitHub Actions.",
   "type": "module",
-  "main": "dist/index.js",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "dev:http": "cross-env MCP_TRANSPORT=http tsx src/index.ts",
-    "dev:mock": "concurrently \"tsx mock-server/index.ts\" \"tsx src/index.ts\"",
-    "mock": "tsx mock-server/index.ts"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.5.0",
-    "axios": "^1.7.9",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
-    "zod": "^3.24.1"
+    "build": "npm --workspaces run build",
+    "typecheck": "npm --workspaces run typecheck",
+    "lint": "npm --workspace @testrelic/mcp run update-readme",
+    "update-readme": "npm --workspace @testrelic/mcp run update-readme",
+    "copy-config": "npm --workspace @testrelic/mcp run copy-config",
+    "roll": "npm run copy-config && npm run update-readme",
+    "test": "vitest run",
+    "ctest": "vitest run tests/contract",
+    "ttest": "vitest run tests/baselines",
+    "dtest": "cross-env MCP_IN_DOCKER=1 vitest run",
+    "test:watch": "vitest",
+    "dev": "npm --workspace @testrelic/mcp run dev",
+    "dev:mock": "concurrently \"npm run mock\" \"npm --workspace @testrelic/mcp run dev\"",
+    "dev:http": "npm --workspace @testrelic/mcp run dev:http",
+    "mock": "tsx mock-server/index.ts",
+    "preinspect": "npm --workspace @testrelic/mcp run build",
+    "inspect": "npx -y @modelcontextprotocol/inspector node packages/mcp/dist/cli.js --caps core,coverage,creation,healing,impact,triage,signals,devtools --mock-mode",
+    "format": "prettier --write .",
+    "clean": "npm --workspaces run clean && rimraf coverage .testrelic-cache .testrelic-output"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.4",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
+    "prettier": "^3.4.2",
+    "rimraf": "^6.0.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

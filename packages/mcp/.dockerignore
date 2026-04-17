@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.testrelic-cache*
+**/.testrelic-output*
+**/coverage
+**/.vscode
+**/.idea
+**/*.log
+**/.DS_Store
+tests/**
+mock-server/**
+.git/**

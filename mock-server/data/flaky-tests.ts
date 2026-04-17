@@ -1,4 +1,4 @@
-import type { FlakyTest, FlakinessQueryResult } from "../../src/types/index.js";
+import type { FlakyTest, FlakinessQueryResult } from "../../packages/mcp/src/types/index.js";
 
 export const mockFlakyTests: FlakyTest[] = [
   {

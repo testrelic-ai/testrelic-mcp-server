@@ -1,4 +1,4 @@
-import type { LokiQueryResponse } from "../../src/types/index.js";
+import type { LokiQueryResponse } from "../../packages/mcp/src/types/index.js";
 
 export const mockLokiResponses: Record<string, LokiQueryResponse> = {
   "checkout_payment_failed": {

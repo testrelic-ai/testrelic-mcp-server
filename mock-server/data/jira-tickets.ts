@@ -1,4 +1,4 @@
-import type { JiraTicket } from "../../src/types/index.js";
+import type { JiraTicket } from "../../packages/mcp/src/types/index.js";
 
 // Pre-seeded tickets used for deduplication testing.
 // RUN-2846 already has ENG-4820 → create_jira_ticket should return existing, not create a new one.

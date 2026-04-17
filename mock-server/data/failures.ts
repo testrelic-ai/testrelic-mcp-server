@@ -1,4 +1,4 @@
-import type { RunFailuresResponse } from "../../src/types/index.js";
+import type { RunFailuresResponse } from "../../packages/mcp/src/types/index.js";
 
 export const mockFailures: Record<string, RunFailuresResponse> = {
   "RUN-2847": {

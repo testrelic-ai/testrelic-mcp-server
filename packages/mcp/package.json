@@ -1,0 +1,80 @@
+{
+  "name": "@testrelic/mcp",
+  "version": "2.1.0",
+  "description": "TestRelic MCP Server — cloud-wired intelligent testing context (test creation, auto-healing, coverage gaps, test impact). One token; everything else is resolved from your cloud-platform-app org.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "mcp-server-testrelic": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/cli.ts",
+    "dev:http": "tsx src/cli.ts --port 3000",
+    "update-readme": "node scripts/update-readme.js",
+    "copy-config": "node scripts/copy-config.js",
+    "roll": "npm run copy-config && npm run update-readme"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "axios": "^1.7.9",
+    "diff": "^7.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "gpt-tokenizer": "^2.8.1",
+    "lru-cache": "^11.0.2",
+    "p-queue": "^8.1.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "yargs": "^17.7.2",
+    "zod": "^3.24.1"
+  },
+  "optionalDependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^11.7.0",
+    "hnswlib-node": "^3.0.0",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-typescript": "^0.23.2"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "@types/yargs": "^17.0.33",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "testrelic",
+    "testing",
+    "playwright",
+    "coverage",
+    "ai"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

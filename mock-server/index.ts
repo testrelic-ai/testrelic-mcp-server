@@ -1,4 +1,5 @@
 import express from "express";
+import cloudRouter from "./routes/cloud.js";
 import testrelicRouter from "./routes/testrelic.js";
 import clickhouseRouter from "./routes/clickhouse.js";
 import amplitudeRouter from "./routes/amplitude.js";
@@ -15,7 +16,10 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", server: "testrelic-mock-api", timestamp: new Date().toISOString() });
 });
 
-// Service namespaces — each mirrors a real external service's request/response shape
+// ── Cloud-platform-app API surface (v2 — the MCP talks only to this) ──────
+app.use("/api/v1", cloudRouter);
+
+// ── Legacy per-upstream mocks — kept for tests/tools that haven't migrated ─
 app.use("/testrelic", testrelicRouter);
 app.use("/clickhouse", clickhouseRouter);
 app.use("/amplitude", amplitudeRouter);
@@ -29,7 +33,8 @@ app.use((_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[mock-server] Running on http://localhost:${PORT}`);
-  console.log(`[mock-server] Routes: /testrelic  /clickhouse  /amplitude  /loki  /jira`);
+  console.log(`[mock-server] Cloud API: /api/v1 (mirrors cloud-platform-app)`);
+  console.log(`[mock-server] Legacy upstreams: /testrelic /clickhouse /amplitude /loki /jira`);
 });
 
 export default app;

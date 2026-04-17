@@ -1,4 +1,4 @@
-import type { AmplitudeUserCount, AmplitudeSession } from "../../src/types/index.js";
+import type { AmplitudeUserCount, AmplitudeSession } from "../../packages/mcp/src/types/index.js";
 
 export const mockAmplitudeUserCounts: Record<string, AmplitudeUserCount> = {
   "RUN-2847": {

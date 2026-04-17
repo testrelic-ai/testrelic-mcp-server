@@ -3,7 +3,14 @@ import type { Request, Response } from "express";
 import { mockRuns } from "../data/runs.js";
 import { mockFailures } from "../data/failures.js";
 import { mockFlakyTests } from "../data/flaky-tests.js";
-import type { TestRun } from "../../src/types/index.js";
+import {
+  mockJourneys,
+  mockTestMap,
+  mockCodeMap,
+  computeCoverageReport,
+  computeCoverageGaps,
+  mockTestSource,
+} from "../data/journeys.js";
 
 const router = Router();
 
@@ -214,6 +221,70 @@ router.post("/suggest-fix", (req: Request, res: Response) => {
       confidence: 0.84,
     },
   });
+});
+
+// ─── v2 endpoints ──────────────────────────────────────────────────────
+
+// GET /testrelic/journeys?project_id=&limit=
+router.get("/journeys", (req: Request, res: Response) => {
+  const project_id = String(req.query.project_id ?? "");
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const journeys = (mockJourneys[project_id] ?? []).slice(0, limit);
+  res.json({ data: journeys, total: mockJourneys[project_id]?.length ?? 0 });
+});
+
+// GET /testrelic/test-map?project_id=
+router.get("/test-map", (req: Request, res: Response) => {
+  const project_id = String(req.query.project_id ?? "");
+  res.json({ data: mockTestMap[project_id] ?? [] });
+});
+
+// GET /testrelic/code-map?project_id=
+router.get("/code-map", (req: Request, res: Response) => {
+  const project_id = String(req.query.project_id ?? "");
+  res.json({ data: mockCodeMap[project_id] ?? [] });
+});
+
+// GET /testrelic/projects/:project_id/coverage-report
+router.get("/projects/:project_id/coverage-report", (req: Request, res: Response) => {
+  res.json(computeCoverageReport(req.params.project_id));
+});
+
+// GET /testrelic/projects/:project_id/coverage-gaps?limit=
+router.get("/projects/:project_id/coverage-gaps", (req: Request, res: Response) => {
+  const limit = Math.min(Number(req.query.limit) || 10, 50);
+  res.json({ data: computeCoverageGaps(req.params.project_id, limit) });
+});
+
+// GET /testrelic/runs/:run_id/artifacts
+router.get("/runs/:run_id/artifacts", (req: Request, res: Response) => {
+  const run_id = req.params.run_id;
+  const failures = mockFailures[run_id];
+  if (!failures) {
+    res.json({ run_id, artifacts: [] });
+    return;
+  }
+  const artifacts = [];
+  for (const f of failures.failures) {
+    if (f.video_url) artifacts.push({ kind: "video", url: f.video_url, note: `@${f.video_timestamp_ms}ms` });
+    if (f.screenshot_url) artifacts.push({ kind: "screenshot", url: f.screenshot_url });
+  }
+  artifacts.push({
+    kind: "trace",
+    url: `https://mock-trace.testrelic.local/${run_id}.trace.zip`,
+    note: "Playwright trace",
+  });
+  res.json({ run_id, artifacts });
+});
+
+// GET /testrelic/tests/:test_id/source
+router.get("/tests/:test_id/source", (req: Request, res: Response) => {
+  const src = mockTestSource[req.params.test_id];
+  if (!src) {
+    res.status(404).json({ error: `Source not available for ${req.params.test_id}` });
+    return;
+  }
+  res.json({ test_id: req.params.test_id, source: src.source, file: src.file });
 });
 
 export default router;

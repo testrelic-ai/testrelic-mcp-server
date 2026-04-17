@@ -1,0 +1,59 @@
+{
+  "name": "@testrelic/mcp-extension",
+  "displayName": "TestRelic MCP",
+  "description": "VSCode/Cursor IDE extension that runs the TestRelic MCP server and streams live workspace context (active file, diff, terminal).",
+  "version": "2.0.0",
+  "private": true,
+  "publisher": "testrelic",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "testrelic-mcp.start", "title": "TestRelic MCP: Start Server" },
+      { "command": "testrelic-mcp.stop", "title": "TestRelic MCP: Stop Server" },
+      { "command": "testrelic-mcp.showStatus", "title": "TestRelic MCP: Show Status" }
+    ],
+    "configuration": {
+      "title": "TestRelic MCP",
+      "properties": {
+        "testrelicMcp.port": {
+          "type": "number",
+          "default": 0,
+          "description": "TCP port for the MCP HTTP transport. 0 = stdio."
+        },
+        "testrelicMcp.capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["core", "coverage", "creation", "healing", "impact"],
+          "description": "Capabilities to enable at startup."
+        },
+        "testrelicMcp.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the server when the workspace opens."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@testrelic/mcp": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/vscode": "^1.80.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.3"
+  }
+}

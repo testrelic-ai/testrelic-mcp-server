@@ -1,4 +1,4 @@
-import type { TestRun } from "../../src/types/index.js";
+import type { TestRun } from "../../packages/mcp/src/types/index.js";
 
 export const mockRuns: TestRun[] = [
   {
