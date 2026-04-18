@@ -18,6 +18,8 @@ jobs:
 
       - run: npm install --no-audit --no-fund
 
+      - name: Build MCP package (required for extension typecheck)
+        run: npm --workspace @testrelic/mcp run build
       - run: npm --workspaces run typecheck
       - run: npm --workspaces run build
       - run: npm run copy-config

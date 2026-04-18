@@ -12,8 +12,16 @@ import { version } from "../version.js";
  *   POST /mcp     — MCP JSON-RPC
  *
  * Session management is by the `Mcp-Session-Id` header per the spec.
+ *
+ * `McpServer` is a single-connection object — it throws on a second
+ * `connect()`. For Streamable HTTP we therefore build a fresh server
+ * per session via the `buildServer` factory. Subsequent requests on
+ * the same session are routed to the already-connected transport.
  */
-export async function startHttp(server: McpServer, config: ResolvedConfig): Promise<() => Promise<void>> {
+export async function startHttp(
+  buildServer: () => McpServer,
+  config: ResolvedConfig,
+): Promise<() => Promise<void>> {
   const app = express();
   app.use(express.json({ limit: "4mb" }));
 
@@ -22,6 +30,7 @@ export async function startHttp(server: McpServer, config: ResolvedConfig): Prom
   });
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const servers = new Map<string, McpServer>();
 
   app.post("/mcp", async (req: Request, res: Response) => {
     const sessionHeader = req.header("mcp-session-id");
@@ -29,16 +38,21 @@ export async function startHttp(server: McpServer, config: ResolvedConfig): Prom
 
     if (!transport) {
       const newSessionId = randomUUID();
+      const sessionServer = buildServer();
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => newSessionId,
         onsessioninitialized: (id: string) => {
           transports.set(id, transport!);
+          servers.set(id, sessionServer);
         },
         onsessionclosed: (id: string) => {
           transports.delete(id);
+          const s = servers.get(id);
+          servers.delete(id);
+          if (s) void s.close().catch(() => undefined);
         },
       });
-      await server.connect(transport);
+      await sessionServer.connect(transport);
     }
 
     try {
@@ -68,6 +82,9 @@ export async function startHttp(server: McpServer, config: ResolvedConfig): Prom
     }
     await transport.close();
     transports.delete(sessionHeader!);
+    const s = servers.get(sessionHeader!);
+    servers.delete(sessionHeader!);
+    if (s) await s.close().catch(() => undefined);
     res.json({ ok: true });
   });
 
@@ -85,6 +102,14 @@ export async function startHttp(server: McpServer, config: ResolvedConfig): Prom
           }
         }
         transports.clear();
+        for (const [, s] of servers) {
+          try {
+            await s.close();
+          } catch {
+            // ignore
+          }
+        }
+        servers.clear();
         await new Promise<void>((done) => httpServer.close(() => done()));
       });
     });

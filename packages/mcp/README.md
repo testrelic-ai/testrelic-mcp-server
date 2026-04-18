@@ -114,9 +114,9 @@ await stop();
 
 Resources (read-only URIs):
 
-- `testrelic://projects/{project_id}/journeys`
-- `testrelic://projects/{project_id}/coverage-report`
-- `testrelic://projects/{project_id}/gaps`
+- `testrelic://repos/{repo_id}/journeys`
+- `testrelic://repos/{repo_id}/coverage-report`
+- `testrelic://repos/{repo_id}/gaps`
 - `testrelic://cache/{cache_key}`
 
 Ready-made prompts exposed to clients:
@@ -133,11 +133,11 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 
 | Capability | Tool | Purpose |
 |---|---|---|
-| `core` | `tr_describe_project` | Describe a project. Returns a project's integrations and capabilities. Sourced from the startup bootstrap — zero additional upstream calls. |
+| `core` | `tr_describe_repo` | Describe a repo. Returns a repo's integrations and capabilities. Sourced from the startup bootstrap — zero additional upstream calls. |
 | `core` | `tr_get_config` | Resolved server config. Returns the resolved configuration — capabilities, transport, timeouts, cache/output dirs. Safe to call early to learn what tools/resources are available. |
 | `core` | `tr_health` | Server health. Reports upstream connectivity, cache state, and whether any circuit breakers are open. Call this before a long workflow to fail fast if something is down. |
 | `core` | `tr_integration_status` | Check integration health. Returns a live health check for one integration type in the current org (e.g. 'jira', 'amplitude', 'grafana-loki'). Call this when a tool that depends on an integration fails with INTEGRATION_NOT_CONNECTED — the error message tells you where to configure it in the cloud UI. |
-| `core` | `tr_list_projects` | List TestRelic projects. Lists repos the authenticated user can see in cloud-platform-app. Sourced from /api/v1/mcp/bootstrap — no upstream fetch per call. Use this first when you don't know which project_id (== repoId) to target. |
+| `core` | `tr_list_repos` | List TestRelic repos. Lists repos the authenticated user can see in cloud-platform-app. Sourced from /api/v1/mcp/bootstrap — no upstream fetch per call. Use this first when you don't know which repo_id (== repoId) to target. |
 | `core` | `tr_recent_runs` | List recent test runs. Paginated list of recent runs. Supports filters by project, framework, status. Prefer this as the cheap entry point before diagnosing a specific run. |
 | `coverage` | `tr_coverage_gaps` | Ranked coverage gaps. Returns the top-N user journeys with NO test covering them, ordered by user count. Each gap includes the pp coverage gain we'd get by covering it and any partial overlaps with existing tests. |
 | `coverage` | `tr_coverage_report` | Coverage report (95% readout). Returns user_coverage and test_coverage metrics with progress toward the 95/95 targets. Repeat calls return a 3-state diff (unchanged / diff / full) to cut token usage on iteration. |

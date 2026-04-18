@@ -5,32 +5,32 @@ import type { ToolContext } from "../registry/index.js";
  * MCP resources — read-only URIs the client can fetch on demand.
  *
  * URI schemes:
- *   testrelic://projects/{project_id}/journeys
- *   testrelic://projects/{project_id}/coverage-report
- *   testrelic://projects/{project_id}/gaps
+ *   testrelic://repos/{repo_id}/journeys
+ *   testrelic://repos/{repo_id}/coverage-report
+ *   testrelic://repos/{repo_id}/gaps
  *   testrelic://cache/{key}          (resolves cached blobs)
  */
 
 export function registerResources(server: McpServer, ctx: ToolContext): void {
   server.registerResource(
     "journeys",
-    "testrelic://projects/{project_id}/journeys",
+    "testrelic://repos/{repo_id}/journeys",
     {
-      title: "Top user journeys for a project",
-      description: "JSON list of top-N user journeys for the given project, Amplitude-derived.",
+      title: "Top user journeys for a repo",
+      description: "JSON list of top-N user journeys for the given repo, Amplitude-derived.",
       mimeType: "application/json",
     },
     async (uri) => {
-      const match = uri.pathname.match(/^\/projects\/([^/]+)\/journeys$/);
+      const match = uri.pathname.match(/^\/repos\/([^/]+)\/journeys$/);
       if (!match) throw new Error(`Invalid journeys URI: ${uri.href}`);
-      const project_id = decodeURIComponent(match[1] ?? "");
-      const journeys = await ctx.context.journeys.top(project_id, 200);
+      const repo_id = decodeURIComponent(match[1] ?? "");
+      const journeys = await ctx.context.journeys.top(repo_id, 200);
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: JSON.stringify({ project_id, journeys }, null, 2),
+            text: JSON.stringify({ repo_id, journeys }, null, 2),
           },
         ],
       };
@@ -39,17 +39,17 @@ export function registerResources(server: McpServer, ctx: ToolContext): void {
 
   server.registerResource(
     "coverage-report",
-    "testrelic://projects/{project_id}/coverage-report",
+    "testrelic://repos/{repo_id}/coverage-report",
     {
       title: "Coverage report (95% readout)",
       description: "User/test coverage, gaps summary, and targets.",
       mimeType: "application/json",
     },
     async (uri) => {
-      const match = uri.pathname.match(/^\/projects\/([^/]+)\/coverage-report$/);
+      const match = uri.pathname.match(/^\/repos\/([^/]+)\/coverage-report$/);
       if (!match) throw new Error(`Invalid coverage-report URI: ${uri.href}`);
-      const project_id = decodeURIComponent(match[1] ?? "");
-      const report = await ctx.context.correlator.coverageReport(project_id);
+      const repo_id = decodeURIComponent(match[1] ?? "");
+      const report = await ctx.context.correlator.coverageReport(repo_id);
       return {
         contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(report, null, 2) }],
       };
@@ -58,18 +58,18 @@ export function registerResources(server: McpServer, ctx: ToolContext): void {
 
   server.registerResource(
     "coverage-gaps",
-    "testrelic://projects/{project_id}/gaps",
+    "testrelic://repos/{repo_id}/gaps",
     {
       title: "Ranked coverage gaps",
       description: "Top-N uncovered journeys ranked by user count.",
       mimeType: "application/json",
     },
     async (uri) => {
-      const match = uri.pathname.match(/^\/projects\/([^/]+)\/gaps$/);
+      const match = uri.pathname.match(/^\/repos\/([^/]+)\/gaps$/);
       if (!match) throw new Error(`Invalid gaps URI: ${uri.href}`);
-      const project_id = decodeURIComponent(match[1] ?? "");
-      const gaps = await ctx.context.correlator.rankedGaps(project_id, 50);
-      return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify({ project_id, gaps }, null, 2) }] };
+      const repo_id = decodeURIComponent(match[1] ?? "");
+      const gaps = await ctx.context.correlator.rankedGaps(repo_id, 50);
+      return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify({ repo_id, gaps }, null, 2) }] };
     },
   );
 

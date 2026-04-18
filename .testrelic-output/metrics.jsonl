@@ -1,0 +1,2 @@
+{"ts":"2026-04-17T12:39:58.262Z","tool":"tr_integration_status","capability":"core","input_tokens":6,"output_tokens":109,"duration_ms":581,"cache_hit":false}
+{"ts":"2026-04-17T16:30:41.767Z","tool":"tr_list_projects","capability":"core","input_tokens":5,"output_tokens":363,"duration_ms":7,"cache_hit":false}

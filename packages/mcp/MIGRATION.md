@@ -81,10 +81,10 @@ The exported type `IntegrationConfig` was removed; use `CloudConfig` instead.
 
 - **One-shot bootstrap.** At startup, the MCP calls `GET /api/v1/mcp/bootstrap`
   once, caches the user/org/repo/integration summary on `ctx.bootstrap`, and
-  serves `tr_list_projects` / `tr_describe_project` / `tr_integration_status`
+  serves `tr_list_repos` / `tr_describe_repo` / `tr_integration_status`
   from that cached view. Startup is blocking-free: a failed bootstrap just
-  logs a warning and tools fall back to explicit `project_id` params.
-- **`project_id` semantics.** In v2.1, `project_id` is the cloud-platform-app
+  logs a warning and tools fall back to explicit `repo_id` params.
+- **`repo_id` semantics.** In v2.1, `repo_id` is the cloud-platform-app
   `repos.id` (UUID) or the `gitId` slug. The bootstrap-backed resolver in
   `src/registry/project.ts` accepts either.
 - **Flakiness.** Reads from the platform's already-computed `flakiness_scores`
