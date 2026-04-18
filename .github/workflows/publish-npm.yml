@@ -1,5 +1,16 @@
 name: Publish npm
 
+# Publishes @testrelic/mcp via npm Trusted Publishing (OIDC). No long-lived npm
+# write token — configure the publisher on npmjs: package → Settings → Trusted Publisher
+# → GitHub Actions: org testrelic-ai, repo testrelic-mcp-server, workflow publish-npm.yml,
+# environment prod (optional but recommended).
+#
+# GitHub Environment secrets: none required for publish. Optional read-only token for
+# private npm deps — see optional step below (NPM_READ_TOKEN).
+#
+# Do NOT set NODE_AUTH_TOKEN on the publish job for OIDC publishing; npm resolves auth
+# from the GitHub Actions OIDC token automatically.
+
 on:
   push:
     tags: ["v*"]
@@ -14,10 +25,6 @@ permissions:
   id-token: write
   contents: read
 
-env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  MCP_TOKEN_SECRET_ID: /testrelic/prod/MCP_TOKEN
-
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -27,9 +34,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Trusted publishing requires Node >= 22.14 and npm >= 11.5.1 (npm docs).
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
           cache: npm
+
+      - name: Ensure npm CLI supports trusted publishing
+        run: npm install -g npm@^11.5.1
 
       - name: Verify tag matches package.json version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -41,38 +52,15 @@ jobs:
             exit 1
           fi
 
-      - run: npm install --no-audit --no-fund
+      # Optional: read-only granular token if you ever add private @scope deps.
+      # Secret name in GitHub prod environment: NPM_READ_TOKEN (maps to NODE_AUTH_TOKEN).
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_READ_TOKEN }}
+        run: npm install --no-audit --no-fund
+
       - run: npm --workspace @testrelic/mcp run build
       - run: cp LICENSE packages/mcp/LICENSE
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.GH_ACTIONS_ROLE_ARN }}
-          role-session-name: GitHubActionsNpmPublish
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Fetch npm token from Secrets Manager
-        id: npm-token
-        run: |
-          RAW=$(aws secretsmanager get-secret-value \
-            --secret-id "$MCP_TOKEN_SECRET_ID" \
-            --query SecretString --output text)
-          if printf '%s' "$RAW" | jq -e . >/dev/null 2>&1; then
-            TOKEN=$(printf '%s' "$RAW" | jq -r '.NPM_MCP_KEY // empty')
-            if [ -z "$TOKEN" ]; then
-              echo "::error::$MCP_TOKEN_SECRET_ID is JSON but missing NPM_MCP_KEY field"
-              exit 1
-            fi
-          else
-            TOKEN="$RAW"
-          fi
-          if [ -z "$TOKEN" ]; then
-            echo "::error::Empty npm token in $MCP_TOKEN_SECRET_ID"
-            exit 1
-          fi
-          echo "::add-mask::$TOKEN"
-          echo "NODE_AUTH_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       - name: Skip if version already published
         id: skip-check
@@ -85,13 +73,11 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to npm
+      - name: Publish to npm (Trusted Publishing / OIDC)
         if: steps.skip-check.outputs.already_published == 'false'
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NODE_AUTH_TOKEN }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             npm publish --workspace @testrelic/mcp --access public --dry-run
           else
-            npm publish --workspace @testrelic/mcp --access public --provenance
+            npm publish --workspace @testrelic/mcp --access public
           fi
