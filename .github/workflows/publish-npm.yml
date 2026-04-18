@@ -58,9 +58,17 @@ jobs:
           RAW=$(aws secretsmanager get-secret-value \
             --secret-id "$MCP_TOKEN_SECRET_ID" \
             --query SecretString --output text)
-          TOKEN=$(printf '%s' "$RAW" | jq -r '.NPM_MCP_KEY // .')
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "::error::NPM token not found in $MCP_TOKEN_SECRET_ID (neither JSON field NPM_MCP_KEY nor plain string)"
+          if printf '%s' "$RAW" | jq -e . >/dev/null 2>&1; then
+            TOKEN=$(printf '%s' "$RAW" | jq -r '.NPM_MCP_KEY // empty')
+            if [ -z "$TOKEN" ]; then
+              echo "::error::$MCP_TOKEN_SECRET_ID is JSON but missing NPM_MCP_KEY field"
+              exit 1
+            fi
+          else
+            TOKEN="$RAW"
+          fi
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Empty npm token in $MCP_TOKEN_SECRET_ID"
             exit 1
           fi
           echo "::add-mask::$TOKEN"
