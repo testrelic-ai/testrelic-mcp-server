@@ -114,9 +114,9 @@ await stop();
 
 Resources (read-only URIs):
 
-- `testrelic://projects/{project_id}/journeys`
-- `testrelic://projects/{project_id}/coverage-report`
-- `testrelic://projects/{project_id}/gaps`
+- `testrelic://repos/{repo_id}/journeys`
+- `testrelic://repos/{repo_id}/coverage-report`
+- `testrelic://repos/{repo_id}/gaps`
 - `testrelic://cache/{cache_key}`
 
 Ready-made prompts exposed to clients:
