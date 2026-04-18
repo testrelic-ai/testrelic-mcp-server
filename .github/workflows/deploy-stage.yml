@@ -138,7 +138,7 @@ jobs:
           SLEEP_SECS=15
           for i in $(seq 1 $MAX_ATTEMPTS); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              "http://${{ env.INGRESS_HOST }}/healthz" --max-time 15)
+              "https://${{ env.INGRESS_HOST }}/healthz" --max-time 15)
             if [ "$STATUS" = "200" ]; then
               echo "Health check passed — HTTP $STATUS (attempt $i/$MAX_ATTEMPTS)"
               exit 0
