@@ -101,6 +101,36 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
   registerResources(server, toolCtx);
   registerPrompts(server);
 
+  // Factory used by the HTTP transport. `McpServer` is a single-connection
+  // object (throws on the second `connect`), so Streamable HTTP needs a
+  // fresh server + registrations per session. The singleton above is only
+  // for stdio and as the ctx anchor for non-server-bound helpers.
+  function buildSessionServer(): McpServer {
+    const sessionServer = new McpServer(
+      { name, version },
+      {
+        capabilities: { tools: {}, resources: {}, prompts: {}, logging: {} },
+        instructions:
+          "TestRelic MCP — intelligent testing context for creation, healing, coverage, and impact. Start with `tr_list_repos` or `tr_coverage_report` to orient; capabilities are gated by the --caps flag to keep the tool schema small.",
+      },
+    );
+    const sessionRegistry = new ToolRegistry();
+    const sessionCtx: ToolContext = {
+      server: sessionServer,
+      config,
+      clients,
+      context,
+      cache,
+      sampling: new SamplingBridge(sessionServer),
+      elicit: new Elicitor(sessionServer),
+      bootstrap,
+    };
+    registerAllTools(sessionCtx, sessionRegistry);
+    registerResources(sessionServer, sessionCtx);
+    registerPrompts(sessionServer);
+    return sessionServer;
+  }
+
   let stopTransport: (() => Promise<void>) | null = null;
   let stopped = false;
 
@@ -123,7 +153,7 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
   async function start(): Promise<void> {
     if (stopTransport) return;
     if (config.server.transport === "http") {
-      stopTransport = await startHttp(server, config);
+      stopTransport = await startHttp(buildSessionServer, config);
     } else {
       stopTransport = await startStdio(server);
     }
