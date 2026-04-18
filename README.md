@@ -9,6 +9,111 @@ context** for:
 3. **Coverage-gap detection** over real Amplitude user journeys.
 4. **Test impact / prioritisation** for PR diffs.
 
+---
+
+## For Cursor users
+
+This repository is published as a plugin in the
+[Cursor Marketplace](https://cursor.com/marketplace). The plugin surface
+is intentionally tiny: a manifest (`.cursor-plugin/plugin.json`), an
+`mcp.json` that launches the bundled server from `packages/mcp/dist/cli.js`,
+a logo, and docs. No binaries, no remote-fetched scripts, no third-party
+credentials.
+
+> **Marketplace submission pre-requisite:** the `mcp.json` currently uses the
+> vendored local `dist/` build (works immediately from a git clone or the
+> Cursor local-plugin install). Once `@testrelic/mcp` is published to npm,
+> update `mcp.json` to `npx -y @testrelic/mcp@<version>` before the final
+> marketplace submission so end-users don't need the source repo.
+
+### Install from the marketplace
+
+1. Open Cursor and search **Settings → Plugins** for `testrelic-mcp`.
+2. Click **Install**. Cursor wires up the MCP server automatically.
+3. Open the agent and ask something like “list my TestRelic projects”.
+
+That’s it. The marketplace default boots the server in **mock mode** so
+you can explore every tool — `tr_list_repos`, `tr_coverage_report`,
+`tr_heal_run`, `tr_analyze_diff`, etc. — without any account or token.
+
+### Manual install (equivalent `mcp.json`)
+
+If you prefer to wire the server by hand from a local clone, add this to
+your Cursor MCP configuration — it is identical to what the plugin ships:
+
+```json
+{
+  "mcpServers": {
+    "testrelic": {
+      "command": "node",
+      "args": [
+        "packages/mcp/dist/cli.js",
+        "--caps", "core,coverage,creation,healing,impact",
+        "--mock-mode"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Cursor runs this with the plugin directory as the working directory, so
+`packages/mcp/dist/cli.js` resolves relative to the install path. No npm
+package or internet access is required.
+
+### Mock mode by default — no secrets required
+
+In mock mode the MCP makes **zero outbound network calls**. Everything
+resolves from the local fixtures shipped with the plugin, so a reviewer
+or first-time user can audit the full tool surface safely.
+
+### Connect real data
+
+When you are ready to point the plugin at your TestRelic cloud:
+
+1. Visit `https://app.testrelic.ai/settings/mcp-tokens` and create a
+   `tr_mcp_*` personal access token.
+2. Store it with either approach:
+   - Run `npx @testrelic/mcp login` (writes `~/.testrelic/token`), or
+   - Export `TESTRELIC_MCP_TOKEN=tr_mcp_…` in your shell / CI.
+3. Remove `--mock-mode` from the `args` array (or override it in your
+   Cursor MCP config).
+
+Every outbound call then goes to your configured
+`TESTRELIC_CLOUD_URL` (default `https://app.testrelic.ai/api/v1`) with
+`Authorization: Bearer <token>` — and nowhere else. Per-service
+credentials (Amplitude, Jira, Grafana Loki, GitHub) never live on your
+machine; they are resolved inside the TestRelic cloud platform.
+
+### Preview the plugin locally
+
+Reviewers and plugin authors can preview this repository as a Cursor
+plugin without publishing anything:
+
+```bash
+# macOS / Linux
+./scripts/link-local-plugin.sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts/link-local-plugin.ps1
+```
+
+Each script creates a symlink at `~/.cursor/plugins/local/testrelic-mcp`
+pointing at this repo. Restart Cursor, open
+**Settings → Features → Model Context Protocol**, and confirm the
+`testrelic` server is listed. In the agent, run `tr_health` — it must
+succeed in mock mode with no environment variables set.
+
+### Security
+
+See [SECURITY.md](SECURITY.md) for the disclosure policy, supported
+versions, and the full plugin threat model. Vulnerabilities go to
+[security@testrelic.ai](mailto:security@testrelic.ai).
+
+---
+
+## For maintainers
+
 This is a **monorepo** with two packages:
 
 | Package | Description |

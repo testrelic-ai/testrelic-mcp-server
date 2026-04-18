@@ -9,19 +9,19 @@ import { version } from "../../version.js";
 
 export const coreTools: ToolDefinition[] = [
   {
-    name: "tr_list_projects",
+    name: "tr_list_repos",
     capability: "core",
-    title: "List TestRelic projects",
+    title: "List TestRelic repos",
     description:
-      "Lists repos the authenticated user can see in cloud-platform-app. Sourced from /api/v1/mcp/bootstrap — no upstream fetch per call. Use this first when you don't know which project_id (== repoId) to target.",
+      "Lists repos the authenticated user can see in cloud-platform-app. Sourced from /api/v1/mcp/bootstrap — no upstream fetch per call. Use this first when you don't know which repo_id (== repoId) to target.",
     inputSchema: {
       limit: z.number().int().min(1).max(100).optional().default(20),
     },
     outputSchema: {
-      projects: z.array(
+      repos: z.array(
         z.object({
-          project_id: z.string(),
-          project_name: z.string(),
+          repo_id: z.string(),
+          repo_name: z.string(),
           git_id: z.string(),
         }),
       ),
@@ -30,35 +30,35 @@ export const coreTools: ToolDefinition[] = [
       const limit = (input.limit as number | undefined) ?? 20;
       const repos = ctx.bootstrap?.repos ?? [];
       const results = repos.slice(0, limit).map((r) => ({
-        project_id: r.id,
-        project_name: r.displayName,
+        repo_id: r.id,
+        repo_name: r.displayName,
         git_id: r.gitId,
       }));
-      const lines = ["## Projects", ""];
-      for (const p of results) lines.push(`- **${p.project_id}** — ${p.project_name} (git: \`${p.git_id}\`)`);
+      const lines = ["## Repos", ""];
+      for (const p of results) lines.push(`- **${p.repo_id}** — ${p.repo_name} (git: \`${p.git_id}\`)`);
       if (!results.length) {
         lines.push(
           "_No repos found. Either bootstrap failed (check your MCP token) or this organization has no repos yet._",
         );
       }
-      return { text: lines.join("\n"), structured: { projects: results } };
+      return { text: lines.join("\n"), structured: { repos: results } };
     },
   },
   {
-    name: "tr_describe_project",
+    name: "tr_describe_repo",
     capability: "core",
-    title: "Describe a project",
+    title: "Describe a repo",
     description:
-      "Returns a project's integrations and capabilities. Sourced from the startup bootstrap — zero additional upstream calls.",
+      "Returns a repo's integrations and capabilities. Sourced from the startup bootstrap — zero additional upstream calls.",
     inputSchema: {
-      project_id: z.string().describe("Project ID (== cloud-platform-app repoId) or git slug"),
+      repo_id: z.string().describe("Repo ID (== cloud-platform-app repoId) or git slug"),
     },
     handler: async (input, ctx) => {
-      const id = input.project_id as string;
+      const id = input.repo_id as string;
       const repo = ctx.bootstrap?.repos.find((r) => r.id === id || r.gitId === id);
       if (!repo) {
         return {
-          text: `Project "${id}" not found. Call \`tr_list_projects\` to see available repos.`,
+          text: `Repo "${id}" not found. Call \`tr_list_repos\` to see available repos.`,
           structured: { error: { code: "NOT_FOUND" } },
         };
       }
@@ -72,7 +72,7 @@ export const coreTools: ToolDefinition[] = [
         `- **Organization integrations:** ${integrations.length ? integrations.join(", ") : "(none connected)"}`,
         `- **Created:** ${repo.createdAt}`,
       ].join("\n");
-      return { text, structured: { project: repo, integrations } };
+      return { text, structured: { repo, integrations } };
     },
   },
   {

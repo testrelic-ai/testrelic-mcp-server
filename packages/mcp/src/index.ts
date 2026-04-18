@@ -60,7 +60,7 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
         logging: {},
       },
       instructions:
-        "TestRelic MCP — intelligent testing context for creation, healing, coverage, and impact. Start with `tr_list_projects` or `tr_coverage_report` to orient; capabilities are gated by the --caps flag to keep the tool schema small.",
+        "TestRelic MCP — intelligent testing context for creation, healing, coverage, and impact. Start with `tr_list_repos` or `tr_coverage_report` to orient; capabilities are gated by the --caps flag to keep the tool schema small.",
     },
   );
 
@@ -76,7 +76,7 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
 
   // Best-effort bootstrap: one shot to /api/v1/mcp/bootstrap to pull the
   // authenticated user/org/repo/integration summary. We never block startup
-  // on this — missing bootstrap just means project_id must be given explicitly.
+  // on this — missing bootstrap just means repo_id must be given explicitly.
   let bootstrap: Awaited<ReturnType<typeof clients.cloud.bootstrap>> | undefined;
   try {
     bootstrap = await clients.cloud.bootstrap();

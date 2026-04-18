@@ -97,14 +97,14 @@ describe("bootstrap: fetched at startup and exposed on ctx", () => {
     }
   });
 
-  it("tr_list_projects is served entirely from bootstrap (no extra upstream call)", async () => {
+  it("tr_list_repos is served entirely from bootstrap (no extra upstream call)", async () => {
     const srv = await startInProcessServer();
     try {
-      const tool = ALL_TOOLS.find((t) => t.name === "tr_list_projects")!;
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_list_repos")!;
       const before = srv.__ctx.clients._raw.cloud.isCircuitOpen();
       const result = await tool.handler({ limit: 10 }, srv.__ctx);
-      const s = result.structured as { projects: Array<{ project_id: string }> };
-      expect(s.projects.length).toBeGreaterThan(0);
+      const s = result.structured as { repos: Array<{ repo_id: string }> };
+      expect(s.repos.length).toBeGreaterThan(0);
       expect(before).toBe(false);
     } finally {
       await srv.stop();
