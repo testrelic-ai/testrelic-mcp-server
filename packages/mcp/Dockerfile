@@ -4,7 +4,6 @@
 
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
-ENV NODE_ENV=production
 
 # Install toolchain for better-sqlite3 + hnswlib-node native builds.
 RUN apt-get update \
@@ -17,6 +16,8 @@ COPY tsconfig.base.json ./
 COPY packages/mcp/package.json packages/mcp/
 COPY packages/extension/package.json packages/extension/
 
+# Install all deps including devDependencies so tsc is available for the build step.
+# NODE_ENV is intentionally NOT set to production here; it is set in the runtime stage.
 RUN npm ci --workspace @testrelic/mcp --include-workspace-root
 
 # Sources.

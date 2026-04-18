@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "testrelic": {
+      "url": "https://mcp-stage.testrelic.ai/mcp"
+    }
+  }
+}
