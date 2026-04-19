@@ -73,7 +73,7 @@
     "coverage",
     "ai"
   ],
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "https://github.com/testrelic-ai/testrelic-mcp-server.git"

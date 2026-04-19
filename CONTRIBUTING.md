@@ -7,7 +7,7 @@ security in mind.
 
 ## Ground rules
 
-- All contributions are licensed under **Apache-2.0**, the same licence
+- All contributions are licensed under **AGPL-3.0-only**, the same licence
   as the project (see [LICENSE](LICENSE)).
 - By opening a pull request you confirm you have the right to contribute
   the code under this licence.

@@ -195,4 +195,4 @@ npm run dtest       # Docker-mode tests (MCP_IN_DOCKER=1)
 
 ## License
 
-Apache-2.0
+AGPL-3.0-only

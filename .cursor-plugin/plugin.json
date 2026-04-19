@@ -8,7 +8,7 @@
   },
   "homepage": "https://testrelic.ai",
   "repository": "https://github.com/testrelic-ai/testrelic-mcp-server",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "keywords": [
     "testing",
     "playwright",
