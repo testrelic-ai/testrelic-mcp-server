@@ -38,7 +38,7 @@
     "diff": "^7.0.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "gpt-tokenizer": "^2.8.1",
+    "gpt-tokenizer": "^3.4.0",
     "lru-cache": "^11.0.2",
     "p-queue": "^8.1.0",
     "pino": "^9.6.0",
@@ -61,7 +61,7 @@
     "@types/yargs": "^17.0.33",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
+    "typescript": "^6.0.3",
     "vitest": "^2.1.8"
   },
   "keywords": [
