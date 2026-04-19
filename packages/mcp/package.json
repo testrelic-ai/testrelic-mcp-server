@@ -76,7 +76,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/testrelic-ai/testrelic-mcp-server.git"
+    "url": "git+https://github.com/testrelic-ai/testrelic-mcp-server.git"
   },
   "engines": {
     "node": ">=20.0.0"
