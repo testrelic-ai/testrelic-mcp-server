@@ -2,7 +2,7 @@
 
 TestRelic Model Context Protocol (MCP) server for AI coding assistants.
 
-> **v2.1.0 — cloud-wired.** The only thing you configure is one token. Every
+> **v3.0.0 — cloud-wired.** The only thing you configure is one token. Every
 > integration (Jira, Amplitude, Grafana Loki, GitHub) is resolved server-side
 > from the authenticated user's organisation in cloud-platform-app — the MCP
 > never holds third-party secrets.
@@ -195,4 +195,4 @@ npm run dtest       # Docker-mode tests (MCP_IN_DOCKER=1)
 
 ## License
 
-Apache-2.0
+AGPL-3.0-only

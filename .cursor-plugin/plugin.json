@@ -1,14 +1,14 @@
 {
   "name": "testrelic-mcp",
   "description": "Intelligent testing context for AI coding assistants — test creation, auto-healing, coverage gaps, test impact, and triage backed by real Amplitude user journeys.",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "author": {
     "name": "TestRelic",
     "email": "support@testrelic.ai"
   },
   "homepage": "https://testrelic.ai",
   "repository": "https://github.com/testrelic-ai/testrelic-mcp-server",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "keywords": [
     "testing",
     "playwright",
