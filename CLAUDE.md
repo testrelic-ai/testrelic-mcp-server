@@ -134,6 +134,19 @@ npm run test          # everything
 2. `npm run test`
 3. `npm run roll` — regenerates README tool tables and copies config types.
 
+## Cursor Agent Skill
+
+A Cursor Agent Skill for this repo lives at:
+
+```
+.cursor/skills/testrelic-mcp/SKILL.md
+```
+
+It documents auth, transports, `--caps`, tools, prompts, resources, bootstrap
+edge cases, and truncation recovery — grounded against the source code. Read
+it before writing any agent that invokes `tr_*` tools. The `examples.md`
+alongside it covers the three registered MCP prompt workflows.
+
 ## Hard rules
 
 - **Never** log to stdout — pino writes to stderr so the MCP handshake is intact.
