@@ -51,6 +51,37 @@ npm run mock             # starts http://localhost:4000/api/v1
 npx @testrelic/mcp --caps core,coverage,creation --mock-mode
 ```
 
+## Cursor Agent Skill
+
+This package ships a Cursor Agent Skill that teaches your AI assistant to invoke
+`tr_*` tools correctly — auth, capability flags, MCP prompts, resources, bootstrap
+edge cases, and truncation recovery.
+
+**Activate it in your project (one-time):**
+
+```bash
+# Copy the skill into your repo's .cursor directory
+mkdir -p .cursor/skills/testrelic-mcp
+cp node_modules/@testrelic/mcp/.cursor/skills/testrelic-mcp/SKILL.md \
+   .cursor/skills/testrelic-mcp/SKILL.md
+```
+
+Or, if you used `npx` without installing:
+
+```bash
+mkdir -p .cursor/skills/testrelic-mcp
+npx @testrelic/mcp --print-skill > .cursor/skills/testrelic-mcp/SKILL.md
+```
+
+Once the file is in `.cursor/skills/testrelic-mcp/SKILL.md`, Cursor loads it
+automatically whenever you work in that repo — no further configuration needed.
+
+> The skill covers: two-credential distinction (`TESTRELIC_API_KEY` vs `tr_mcp_*`),
+> stdio vs HTTP transport, all capabilities including `config`, scenario → `--caps`
+> table, the three registered MCP prompts, all resource URIs, bootstrap failure
+> recovery, token-budget truncation + cache key retrieval, and deprecated alias
+> guidance.
+
 ## CLI
 
 ```bash
