@@ -22,6 +22,29 @@ describe("contract: tool registry", () => {
       expect(caps.has("coverage")).toBe(true);
       expect(caps.has("impact")).toBe(false);
       expect(caps.has("creation")).toBe(false);
+      // New surfaces are off unless explicitly opted in.
+      expect(caps.has("ai")).toBe(false);
+      expect(caps.has("marketplace")).toBe(false);
+      expect(caps.has("apps")).toBe(false);
+      expect(caps.has("artifacts")).toBe(false);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("opt-in for ai/marketplace/apps/artifacts capabilities", async () => {
+    const { registeredTools, stop } = await startInProcessServer({
+      capabilities: ["ai", "marketplace", "apps", "artifacts"],
+    });
+    try {
+      const names = new Set(registeredTools.map((t) => t.name));
+      expect(names.has("tr_ai_execute")).toBe(true);
+      expect(names.has("tr_ask_ai")).toBe(true);
+      expect(names.has("tr_marketplace_list_apps")).toBe(true);
+      expect(names.has("tr_marketplace_invoke")).toBe(true);
+      expect(names.has("tr_apps_list")).toBe(true);
+      expect(names.has("tr_apps_execute")).toBe(true);
+      expect(names.has("tr_artifacts_list")).toBe(true);
     } finally {
       await stop();
     }

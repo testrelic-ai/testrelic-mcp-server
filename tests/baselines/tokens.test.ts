@@ -4,6 +4,23 @@ import { startInProcessServer, startMockServer, stopMockServer } from "../fixtur
 import { ALL_TOOLS } from "../../packages/mcp/src/tools/index.js";
 import { countObjectTokens } from "../../packages/mcp/src/telemetry/tokens.js";
 import type { TestRelicServer } from "../../packages/mcp/src/index.js";
+import type { Capability } from "../../packages/mcp/src/config.js";
+
+const ALL_CAPS: Capability[] = [
+  "core",
+  "coverage",
+  "creation",
+  "healing",
+  "impact",
+  "triage",
+  "signals",
+  "devtools",
+  "ai",
+  "marketplace",
+  "apps",
+  "artifacts",
+  "sessions",
+];
 
 /**
  * Token baselines — the core contract of v2 is "60% fewer tokens than a
@@ -72,6 +89,82 @@ describe("token baselines", () => {
       const second = await runTool("tr_coverage_report", { project_id: "PROJ-1", read_mode: "auto" }, srv);
       const tokens = countObjectTokens(second.text);
       expect(tokens).toBeLessThan(400);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  // ── New surfaces: ai / marketplace / apps / artifacts ───────────────────
+  // These tools live behind capabilities that aren't on by default in the
+  // fixture, so each test boots its own server with the full cap set.
+
+  it("tr_ai_list_tools stays under 1500 tokens for the mock catalog (3 tools)", async () => {
+    const srv = await startInProcessServer({ capabilities: ALL_CAPS });
+    try {
+      const result = await runTool("tr_ai_list_tools", {}, srv);
+      const tokens = countObjectTokens(result.text) + countObjectTokens(result.structured ?? {});
+      expect(tokens).toBeLessThan(1_500);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  it("tr_marketplace_list_apps stays under 1200 tokens for the mock catalog (3 apps)", async () => {
+    const srv = await startInProcessServer({ capabilities: ALL_CAPS });
+    try {
+      const result = await runTool("tr_marketplace_list_apps", {}, srv);
+      const tokens = countObjectTokens(result.text) + countObjectTokens(result.structured ?? {});
+      expect(tokens).toBeLessThan(1_200);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  it("tr_apps_list stays under 800 tokens (3 mock apps)", async () => {
+    const srv = await startInProcessServer({ capabilities: ALL_CAPS });
+    try {
+      const result = await runTool("tr_apps_list", {}, srv);
+      const tokens = countObjectTokens(result.text) + countObjectTokens(result.structured ?? {});
+      expect(tokens).toBeLessThan(800);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  it("tr_artifacts_list stays under 1200 tokens (2 mock artifacts)", async () => {
+    const srv = await startInProcessServer({ capabilities: ALL_CAPS });
+    try {
+      const result = await runTool("tr_artifacts_list", {}, srv);
+      const tokens = countObjectTokens(result.text) + countObjectTokens(result.structured ?? {});
+      expect(tokens).toBeLessThan(1_200);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  it("tr_generate_dashboard artifact result stays under 1800 tokens", async () => {
+    const srv = await startInProcessServer({ capabilities: ALL_CAPS });
+    try {
+      const result = await runTool("tr_generate_dashboard", { input: { title: "Mock dashboard" } }, srv);
+      const tokens = countObjectTokens(result.text) + countObjectTokens(result.structured ?? {});
+      expect(tokens).toBeLessThan(1_800);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  // TODO: 3-state diff for `tr_marketplace_list_apps` is skipped intentionally.
+  // The diff reader is opt-in per-tool via the `read_mode = auto | full` input
+  // parameter, and the marketplace tool doesn't declare/handle that parameter
+  // (no read_mode in its inputSchema, no auto-mode branch in its handler).
+  // Re-enable this once `tr_marketplace_list_apps` adopts the read_mode pattern.
+  it.skip("tr_marketplace_list_apps 3-state diff drops second read below 300 tokens", async () => {
+    const srv = await startInProcessServer({ capabilities: ALL_CAPS });
+    try {
+      await runTool("tr_marketplace_list_apps", { read_mode: "auto" }, srv);
+      const second = await runTool("tr_marketplace_list_apps", { read_mode: "auto" }, srv);
+      const tokens = countObjectTokens(second.text);
+      expect(tokens).toBeLessThan(300);
     } finally {
       await srv.stop();
     }

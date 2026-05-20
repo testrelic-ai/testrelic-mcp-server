@@ -84,8 +84,26 @@ integrations + capabilities). Tools that need a repo use
 ### Capabilities
 
 Always on: `core`. Gated: `coverage`, `creation`, `healing`, `impact`,
-`triage`, `signals`, `devtools`, `config`. Filter via `--caps` or
-`TESTRELIC_MCP_CAPS`.
+`triage`, `signals`, `devtools`, `config`, `ai`, `marketplace`, `apps`,
+`artifacts`, `sessions`. Filter via `--caps` or `TESTRELIC_MCP_CAPS`.
+
+The five newest capabilities surface the platform's Ask-AI and integration
+features to external MCP clients:
+
+- `ai` — Ask-AI tool catalog, single-turn agent, conversation management,
+  and granular artifact generators (dashboards, reports, test plans,
+  presentations, navigation paths).
+- `marketplace` — first-class testing integrations (Jira, GitHub Actions,
+  BrowserStack, LambdaTest, Sentry, Amplitude, Grafana Loki): catalog,
+  validate / connect / OAuth-start, disconnect, and unified `invoke`.
+- `apps` — generic action runner for connected apps (Slack, Notion,
+  Linear, HubSpot, Google Calendar, etc.): list, list actions, connect /
+  disconnect via OAuth, and universal `execute`.
+- `artifacts` — list / get / export (PNG, PDF) / save-to-file for
+  artifacts produced by the Ask-AI agent. Each artifact is also
+  addressable as `testrelic://artifacts/{id}`.
+- `sessions` — cloud test session workspaces (BrowserStack / LambdaTest):
+  search, video, screenshots, logs, multi-pane workspace render.
 
 ### Tool naming
 
@@ -132,7 +150,33 @@ npm run test          # everything
 
 1. `npm run typecheck`
 2. `npm run test`
-3. `npm run roll` — regenerates README tool tables and copies config types.
+3. `npm run roll` — regenerates README tool tables (in
+   `packages/mcp/README.md`) and copies config types. Run this after
+   adding, removing, or renaming any tool / capability — the README's
+   capability-tool tables are derived from `ALL_TOOLS`, so the
+   `ai`, `marketplace`, `apps`, `artifacts`, and `sessions` sections only
+   appear once a maintainer rolls the README.
+
+## Smoke / E2E
+
+`npm run smoke` boots the MCP in-process against the local mock server
+and walks the canonical `core` → `ai` → `marketplace` → `apps` →
+`artifacts` sequence, asserting each step is non-error. Useful as a
+fast pre-PR sanity check that doesn't require a real token. See
+`scripts/smoke-e2e.ts` — accepts `--caps=...` to narrow the surface.
+
+## Cursor Agent Skill
+
+A Cursor Agent Skill for this repo lives at:
+
+```
+.cursor/skills/testrelic-mcp/SKILL.md
+```
+
+It documents auth, transports, `--caps`, tools, prompts, resources, bootstrap
+edge cases, and truncation recovery — grounded against the source code. Read
+it before writing any agent that invokes `tr_*` tools. The `examples.md`
+alongside it covers the three registered MCP prompt workflows.
 
 ## Hard rules
 
