@@ -7,6 +7,10 @@ import { impactTools } from "./impact/index.js";
 import { triageTools } from "./triage/index.js";
 import { signalsTools } from "./signals/index.js";
 import { devtoolsTools } from "./devtools/index.js";
+import { aiTools } from "./ai/index.js";
+import { marketplaceTools } from "./marketplace/index.js";
+import { appsTools } from "./apps/index.js";
+import { artifactsTools } from "./artifacts/index.js";
 
 /**
  * Centralised tool bundle. The registry filters by capability; unknown
@@ -22,6 +26,10 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...triageTools,
   ...signalsTools,
   ...devtoolsTools,
+  ...aiTools,
+  ...marketplaceTools,
+  ...appsTools,
+  ...artifactsTools,
 ];
 
 export function registerAllTools(ctx: ToolContext, registry: ToolRegistry): void {

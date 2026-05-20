@@ -323,6 +323,241 @@ export function cloudOps(client: ServiceClient) {
     }): Promise<PlatformJiraIssue> {
       return client.post("/integrations/jira/issues", body);
     },
+
+    // ── Ask AI surface (mcp:ai) ──────────────────────────────────────────
+    /**
+     * Catalog of every AI tool the platform exposes for execution via
+     * `/mcp/ai/tools/:name/execute`. Returns input schemas so the MCP client
+     * can validate args before calling.
+     */
+    listAiTools(): Promise<{ catalog: Array<{
+      name: string;
+      category: string;
+      description: string;
+      output: "text" | "artifact";
+      artifactType?: string;
+      inputSchema: Record<string, unknown>;
+    }> }> {
+      return client.get("/mcp/ai/tools");
+    },
+    executeAiTool(name: string, input: Record<string, unknown>): Promise<{
+      result: Record<string, unknown>;
+      artifact?: { id?: string; type: string; payload: Record<string, unknown> };
+    }> {
+      return client.post(`/mcp/ai/tools/${encodeURIComponent(name)}/execute`, { input });
+    },
+    runAgent(body: {
+      messages: Array<{ role: "user" | "assistant"; content: string }>;
+      conversationId?: string;
+      repoId?: string;
+      runId?: string;
+      maxToolRounds?: number;
+    }): Promise<{
+      conversationId: string;
+      messages: Array<{ role: string; content: string; artifacts?: Record<string, unknown>[] }>;
+      usage?: { inputTokens: number; outputTokens: number };
+    }> {
+      return client.post("/mcp/ai/agent", body);
+    },
+    listConversations(params?: { cursor?: string; limit?: number }): Promise<{
+      conversations: Array<{ id: string; title: string; createdAt: string; updatedAt: string; messageCount: number }>;
+      nextCursor: string | null;
+    }> {
+      return client.get("/mcp/ai/conversations", params as Record<string, unknown> | undefined);
+    },
+    getConversation(id: string): Promise<{
+      id: string;
+      title: string;
+      messages: Array<{ id: string; role: string; content: string; artifacts?: Record<string, unknown>[]; createdAt: string }>;
+    }> {
+      return client.get(`/mcp/ai/conversations/${encodeURIComponent(id)}`);
+    },
+    createConversation(body: { title?: string; repoId?: string }): Promise<{ id: string; title: string }> {
+      return client.post("/mcp/ai/conversations", body);
+    },
+    deleteConversation(id: string): Promise<{ ok: true }> {
+      return client.delete(`/mcp/ai/conversations/${encodeURIComponent(id)}`);
+    },
+    listArtifacts(params?: {
+      conversationId?: string;
+      repoId?: string;
+      type?: string;
+      cursor?: string;
+      limit?: number;
+    }): Promise<{
+      artifacts: Array<{ id: string; type: string; title: string; createdAt: string; conversationId: string }>;
+      nextCursor: string | null;
+    }> {
+      return client.get("/mcp/ai/artifacts", params as Record<string, unknown> | undefined);
+    },
+    getArtifact(id: string): Promise<{
+      id: string;
+      type: string;
+      title: string;
+      payload: Record<string, unknown>;
+      createdAt: string;
+    }> {
+      return client.get(`/mcp/ai/artifacts/${encodeURIComponent(id)}`);
+    },
+    exportArtifact(id: string, format: "png" | "pdf"): Promise<{ url: string; expiresAt: string }> {
+      return client.post(`/mcp/ai/artifacts/${encodeURIComponent(id)}/export`, { format });
+    },
+    getAiUsage(): Promise<{
+      monthlyTokenUsage: number;
+      monthlyTokenBudget: number;
+      monthlyRequestCount: number;
+      overLimit: boolean;
+    }> {
+      return client.get("/mcp/ai/usage");
+    },
+
+    // ── Marketplace surface (mcp:marketplace) ────────────────────────────
+    listMarketplaceApps(): Promise<{
+      apps: Array<{
+        slug: string;
+        name: string;
+        category: string;
+        description: string;
+        authMethod: string;
+        requiresOAuth: boolean;
+        capabilities: string[];
+        connected: boolean;
+        comingSoon: boolean;
+        docsUrl: string;
+      }>;
+    }> {
+      return client.get("/mcp/marketplace/apps");
+    },
+    getMarketplaceApp(slug: string): Promise<{
+      slug: string;
+      name: string;
+      category: string;
+      description: string;
+      authMethod: string;
+      requiresOAuth: boolean;
+      capabilities: string[];
+      connected: boolean;
+      configFields: Array<{ key: string; label: string; placeholder: string; helperText?: string; secret?: boolean }>;
+      docsUrl: string;
+    }> {
+      return client.get(`/mcp/marketplace/apps/${encodeURIComponent(slug)}`);
+    },
+    listMarketplaceConnections(): Promise<{
+      connections: Array<{ slug: string; status: string; connectedAt: string }>;
+    }> {
+      return client.get("/mcp/marketplace/connections");
+    },
+    validateMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/validate`, { credentials });
+    },
+    connectMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; id: string }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/connect`, { credentials });
+    },
+    startMarketplaceOAuth(slug: string): Promise<{ redirectUrl: string; state: string }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/oauth/start`, {});
+    },
+    disconnectMarketplaceApp(slug: string): Promise<{ ok: true }> {
+      return client.delete(`/mcp/marketplace/apps/${encodeURIComponent(slug)}`);
+    },
+    invokeMarketplaceApp(slug: string, operation: string, args: Record<string, unknown>): Promise<{
+      ok: boolean;
+      operation: string;
+      result: Record<string, unknown>;
+    }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/invoke`, { operation, args });
+    },
+
+    // ── Connected Apps surface (mcp:apps) ────────────────────────────────
+    // Every method's response is renamed on the platform side so no third-party
+    // gateway brand name leaks. The CloudOps types use only "app" / "action".
+    listApps(): Promise<{
+      apps: Array<{ slug: string; name: string; category: string; connected: boolean; connectionId: string | null }>;
+    }> {
+      return client.get("/mcp/apps");
+    },
+    getApp(slug: string): Promise<{
+      slug: string;
+      name: string;
+      category: string;
+      connected: boolean;
+      connectionId: string | null;
+    }> {
+      return client.get(`/mcp/apps/${encodeURIComponent(slug)}`);
+    },
+    listAppActions(slug: string): Promise<{
+      actions: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+    }> {
+      return client.get(`/mcp/apps/${encodeURIComponent(slug)}/actions`);
+    },
+    listAppConnections(): Promise<{
+      connections: Array<{ id: string; app: string; status: string }>;
+    }> {
+      return client.get("/mcp/apps/connections");
+    },
+    startAppConnect(slug: string): Promise<{ redirectUrl: string; connectionId: string }> {
+      return client.post(`/mcp/apps/${encodeURIComponent(slug)}/connect`, {});
+    },
+    getAppConnection(connectionId: string): Promise<{ id: string; app: string; status: string }> {
+      return client.get(`/mcp/apps/connections/${encodeURIComponent(connectionId)}`);
+    },
+    disconnectAppConnection(connectionId: string): Promise<{ ok: true }> {
+      return client.delete(`/mcp/apps/connections/${encodeURIComponent(connectionId)}`);
+    },
+    appExecute(body: { app: string; action: string; args: Record<string, unknown> }): Promise<{
+      ok: boolean;
+      app: string;
+      action: string;
+      result: Record<string, unknown>;
+    }> {
+      return client.post("/mcp/apps/execute", body);
+    },
+
+    // ── Newly-exposed stubs (now backed by real endpoints) ───────────────
+    getAiRcaV2(runId: string): Promise<{
+      run_id: string;
+      root_cause: string;
+      confidence: number;
+      affected_component: string;
+      suggested_fix: string;
+      evidence: string[];
+      generated_at: string;
+    }> {
+      return client.get(`/mcp/runs/${encodeURIComponent(runId)}/rca`);
+    },
+    suggestFixV2(runId: string, body: { test_name: string }): Promise<{
+      run_id: string;
+      test_name: string;
+      suggestion: { description: string; code_diff: string; affected_files: string[]; confidence: number };
+    }> {
+      return client.post(`/mcp/runs/${encodeURIComponent(runId)}/suggest-fix`, body);
+    },
+    dismissFlakyV2(testId: string, body: { reason: string }): Promise<{
+      success: boolean;
+      test_id: string;
+      known_flaky: boolean;
+    }> {
+      return client.post(`/mcp/tests/${encodeURIComponent(testId)}/dismiss-flaky`, body);
+    },
+    getCodeMapV2(repoId: string): Promise<{ data: Array<{ id: string; type: string; name: string; file_path: string }> }> {
+      return client.get(`/mcp/repos/${encodeURIComponent(repoId)}/code-map`);
+    },
+    getAmplitudeSessionsV2(runId: string, limit = 50): Promise<{
+      run_id: string;
+      sessions: Array<{ session_id: string; user_id?: string; started_at: string; events: string[] }>;
+      total: number;
+    }> {
+      return client.get(`/mcp/integrations/amplitude/sessions`, { runId, limit });
+    },
+    getProjectTrendsV2(repoId: string, days = 30): Promise<{
+      project_id: string;
+      period_days: number;
+      data: Array<{ date: string; passRate: number; flakiness: number; durationMs: number }>;
+    }> {
+      return client.get(`/mcp/repos/${encodeURIComponent(repoId)}/trends`, { days });
+    },
+    getActiveAlertsV2(): Promise<Array<{ id: string; type: string; severity: string; message: string; created_at: string }>> {
+      return client.get("/mcp/alerts/active");
+    },
   };
 }
 
@@ -393,13 +628,18 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         days: res.window,
       };
     },
-    async dismissFlakyTest(_test_id: string, _reason: string): Promise<{
+    async dismissFlakyTest(test_id: string, reason: string): Promise<{
       success: boolean;
       test_id: string;
       known_flaky: boolean;
     }> {
-      // Not yet exposed by cloud-platform-app; surface clean failure.
-      return { success: false, test_id: _test_id, known_flaky: false };
+      try {
+        return await cloud.dismissFlakyV2(test_id, { reason });
+      } catch {
+        // Platform hasn't shipped /mcp/tests/:id/dismiss-flaky yet. Surface
+        // clean failure so the MCP client sees ok:false rather than 5xx.
+        return { success: false, test_id, known_flaky: false };
+      }
     },
     async getProjectConfig(project_id: string): Promise<ProjectConfig> {
       const bs = await cloud.bootstrap();
@@ -421,11 +661,38 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         alert_threshold_flakiness: 15,
       };
     },
-    async getProjectTrends(_project_id: string): Promise<ProjectTrends> {
-      return { project_id: _project_id, period_days: 30, data: [] };
+    async getProjectTrends(project_id: string): Promise<ProjectTrends> {
+      try {
+        const v2 = await cloud.getProjectTrendsV2(project_id, 30);
+        return {
+          project_id: v2.project_id,
+          period_days: v2.period_days,
+          data: v2.data.map((d) => ({
+            date: d.date,
+            pass_rate: d.passRate,
+            total_runs: 0,
+            avg_duration_ms: d.durationMs,
+            flaky_count: Math.round(d.flakiness),
+          })),
+        };
+      } catch {
+        return { project_id, period_days: 30, data: [] };
+      }
     },
     async getActiveAlerts(): Promise<ActiveAlert[]> {
-      return [];
+      try {
+        const alerts = await cloud.getActiveAlertsV2();
+        return alerts.map((a) => ({
+          alert_id: a.id,
+          project_id: "",
+          type: a.type as ActiveAlert["type"],
+          severity: a.severity as ActiveAlert["severity"],
+          message: a.message,
+          triggered_at: a.created_at,
+        }));
+      } catch {
+        return [];
+      }
     },
     async getAiRca(run_id: string): Promise<{
       run_id: string;
@@ -436,31 +703,39 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       evidence: string[];
       generated_at: string;
     }> {
-      return {
-        run_id,
-        root_cause: "RCA endpoint not yet available on cloud-platform-app",
-        confidence: 0,
-        affected_component: "",
-        suggested_fix: "",
-        evidence: [],
-        generated_at: new Date().toISOString(),
-      };
+      try {
+        return await cloud.getAiRcaV2(run_id);
+      } catch {
+        return {
+          run_id,
+          root_cause: "RCA endpoint not yet available on cloud-platform-app",
+          confidence: 0,
+          affected_component: "",
+          suggested_fix: "",
+          evidence: [],
+          generated_at: new Date().toISOString(),
+        };
+      }
     },
     async suggestFix(run_id: string, test_name: string): Promise<{
       run_id: string;
       test_name: string;
       suggestion: { description: string; code_diff: string; affected_files: string[]; confidence: number };
     }> {
-      return {
-        run_id,
-        test_name,
-        suggestion: {
-          description: "suggest-fix not yet available on cloud-platform-app",
-          code_diff: "",
-          affected_files: [],
-          confidence: 0,
-        },
-      };
+      try {
+        return await cloud.suggestFixV2(run_id, { test_name });
+      } catch {
+        return {
+          run_id,
+          test_name,
+          suggestion: {
+            description: "suggest-fix not yet available on cloud-platform-app",
+            code_diff: "",
+            affected_files: [],
+            confidence: 0,
+          },
+        };
+      }
     },
     async listJourneys(project_id: string, limit = 50): Promise<{ data: UserJourney[]; total: number }> {
       // Best-effort: fetch journeys from the repo-navigation payload.
@@ -498,10 +773,27 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         })),
       };
     },
-    async getCodeMap(_project_id: string): Promise<{ data: CodeNode[] }> {
-      // cloud-platform-app does not yet expose a remote code map.
-      // Local mode is handled by CodeMap.loadLocal — this stub just returns empty.
-      return { data: [] };
+    async getCodeMap(project_id: string): Promise<{ data: CodeNode[] }> {
+      try {
+        const v2 = await cloud.getCodeMapV2(project_id);
+        return {
+          data: v2.data.map((n) => ({
+            id: n.id,
+            file: n.file_path,
+            name: n.name,
+            kind: (["function", "class", "method", "module"].includes(n.type)
+              ? n.type
+              : "function") as CodeNode["kind"],
+            start_line: 0,
+            end_line: 0,
+          })),
+        };
+      } catch {
+        // Platform either hasn't deployed /mcp/repos/:id/code-map yet or the
+        // repo has no indexed code map. Local mode (`tr_index_repo`) is the
+        // fallback — handled by CodeMap.loadLocal in the context engine.
+        return { data: [] };
+      }
     },
     async getCoverageReport(project_id: string): Promise<CoverageReport> {
       const impact = await cloud.getTestImpact(project_id).catch(() => ({} as Record<string, unknown>));
@@ -550,9 +842,23 @@ export function legacyAmplitudeAdapter(cloud: CloudOps) {
       return { run_id, affected_users: total, peak_time: peak.date, error_path: "" };
     },
     async getSessions(run_id: string, limit = 50): Promise<{ run_id: string; sessions: AmplitudeSession[]; total: number }> {
-      // Amplitude session export is not exposed by the proxy today.
-      const _ = limit; // acknowledged
-      return { run_id, sessions: [], total: 0 };
+      try {
+        const v2 = await cloud.getAmplitudeSessionsV2(run_id, limit);
+        return {
+          run_id: v2.run_id,
+          total: v2.total,
+          sessions: v2.sessions.map((s) => ({
+            session_id: s.session_id,
+            user_id: s.user_id ?? "",
+            device_type: "",
+            country: "",
+            error_event: s.events[0] ?? "",
+            occurred_at: s.started_at,
+          })),
+        };
+      } catch {
+        return { run_id, sessions: [], total: 0 };
+      }
     },
     async listTopJourneys(project_id: string, limit = 50): Promise<{
       project_id: string;

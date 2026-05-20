@@ -76,6 +76,14 @@ export class ServiceClient {
     return this.request<T>({ url, method: "PATCH", data: body });
   }
 
+  public put<T>(url: string, body?: unknown): Promise<T> {
+    return this.request<T>({ url, method: "PUT", data: body });
+  }
+
+  public delete<T>(url: string, params?: Record<string, unknown>): Promise<T> {
+    return this.request<T>({ url, method: "DELETE", params });
+  }
+
   public isCircuitOpen(): boolean {
     return this.breaker.isOpen(this.service);
   }

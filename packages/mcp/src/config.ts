@@ -24,6 +24,13 @@ export const CapabilitySchema = z.enum([
   "signals",
   "devtools",
   "config",
+  // New surfaces that mirror cloud-platform-app's Ask AI + Marketplace +
+  // connected-Apps gateway. Default off — gated by --caps / TESTRELIC_MCP_CAPS.
+  "ai",
+  "marketplace",
+  "apps",
+  "artifacts",
+  "sessions",
 ]);
 
 export const TransportSchema = z.enum(["stdio", "http"]);

@@ -23,6 +23,7 @@
     "dev:mock": "concurrently \"npm run mock\" \"npm --workspace @testrelic/mcp run dev\"",
     "dev:http": "npm --workspace @testrelic/mcp run dev:http",
     "mock": "tsx mock-server/index.ts",
+    "smoke": "tsx scripts/smoke-e2e.ts",
     "preinspect": "npm --workspace @testrelic/mcp run build",
     "inspect": "npx -y @modelcontextprotocol/inspector node packages/mcp/dist/cli.js --caps core,coverage,creation,healing,impact,triage,signals,devtools --mock-mode",
     "format": "prettier --write .",
