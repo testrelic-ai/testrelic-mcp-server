@@ -11,9 +11,9 @@ export const triageTools: ToolDefinition[] = [
   {
     name: "tr_diagnose_run",
     capability: "triage",
-    title: "Diagnose a failing run",
+    title: "Diagnose a failing test run",
     description:
-      "Pulls run metadata, all failures, and ClickHouse flakiness scores; returns a compact diagnostic with video markers (when include_video is true).",
+      "Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure.",
     inputSchema: {
       run_id: z.string(),
       include_video: z.boolean().optional().default(false),
@@ -63,7 +63,8 @@ export const triageTools: ToolDefinition[] = [
     name: "tr_flaky_audit",
     capability: "triage",
     title: "Flaky-test audit",
-    description: "Ranks flaky tests above a threshold over a lookback window.",
+    description:
+      "Lists flaky tests in this org — tests whose pass/fail status changes between retries. Use when the user says 'show me flaky tests', 'which tests are unstable', 'why are these tests intermittent', 'flakiness report'. Ranks by flakiness score over a lookback window; pair with tr_dismiss_flaky to mark a test as known-flaky.",
     inputSchema: {
       project_id: z.string().optional(),
       days: z.number().int().min(1).max(90).optional().default(7),

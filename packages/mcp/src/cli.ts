@@ -10,7 +10,30 @@ import { createServer } from "./index.js";
 import { loadConfigFile, tokenFilePath } from "./config.js";
 import { getLogger } from "./logger.js";
 import { version } from "./version.js";
+import { CapabilitySchema } from "./config.js";
 import type { Capability, Config, LogLevel } from "./config.js";
+
+const VALID_CAPS: readonly Capability[] = CapabilitySchema.options;
+
+function parseCapsList(raw: string): Capability[] {
+  const out: Capability[] = [];
+  const unknown: string[] = [];
+  for (const part of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    if ((VALID_CAPS as readonly string[]).includes(part)) {
+      out.push(part as Capability);
+    } else {
+      unknown.push(part);
+    }
+  }
+  if (unknown.length) {
+    console.error(
+      `Unknown capability flag(s): ${unknown.join(", ")}\n` +
+        `Valid: ${VALID_CAPS.join(", ")}`,
+    );
+    process.exit(2);
+  }
+  return out;
+}
 
 /**
  * CLI surface for the TestRelic MCP server.
@@ -86,7 +109,10 @@ async function main(): Promise<void> {
     )
     .option("caps", {
       type: "string",
-      describe: "Comma-separated capabilities to enable (core is always on).",
+      describe:
+        "Comma-separated capabilities to enable (core is always on). " +
+        "Valid: core, coverage, creation, healing, impact, triage, signals, devtools, config, ai, marketplace, apps, artifacts, sessions. " +
+        "Example: --caps=triage,signals,ai",
     })
     .option("config", {
       type: "string",
@@ -178,7 +204,7 @@ async function main(): Promise<void> {
     ...(argv.port ? { server: { port: argv.port, host: argv.host } } : {}),
     ...(argv.caps
       ? {
-          capabilities: argv.caps.split(",").map((s: string) => s.trim()).filter(Boolean) as Capability[],
+          capabilities: parseCapsList(argv.caps as string),
         }
       : {}),
     ...(argv.outputDir ? { outputDir: argv.outputDir } : {}),

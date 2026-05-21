@@ -135,9 +135,9 @@ export const coverageTools: ToolDefinition[] = [
   {
     name: "tr_coverage_report",
     capability: "coverage",
-    title: "Coverage report (95% readout)",
+    title: "Test coverage report (95% readout)",
     description:
-      "Returns user_coverage and test_coverage metrics with progress toward the 95/95 targets. Repeat calls return a 3-state diff (unchanged / diff / full) to cut token usage on iteration.",
+      "TEST COVERAGE for a repo — how much of the codebase is exercised by tests and how many user journeys are covered. Use when the user asks 'what's our test coverage', 'are we hitting 95%', 'how covered is repo X', 'coverage summary'. Returns user_coverage and test_coverage progress vs the 95/95 targets. Pair with tr_coverage_gaps to see what's missing.",
     inputSchema: {
       project_id: z.string(),
       read_mode: z.enum(["auto", "full"]).optional().default("auto"),
