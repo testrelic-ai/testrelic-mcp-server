@@ -2,10 +2,11 @@
 
 TestRelic Model Context Protocol (MCP) server for AI coding assistants.
 
-> **v3.0.0 — cloud-wired.** The only thing you configure is one token. Every
+> **v3.1.0 — cloud-wired + Ask-AI surface.** The only thing you configure is one token. Every
 > integration (Jira, Amplitude, Grafana Loki, GitHub) is resolved server-side
 > from the authenticated user's organisation in cloud-platform-app — the MCP
-> never holds third-party secrets.
+> never holds third-party secrets. v3.1 adds Ask AI, Marketplace, connected
+> Apps, Artifacts, and Sessions surfaces — see capability table below.
 
 ## What it does
 
@@ -44,12 +45,28 @@ laptop or in the MCP config.
 }
 ```
 
-With the local mock server (no cloud account needed):
+### Try it without a cloud account (`--mock-mode`)
+
+The mock server itself is not bundled in the npm package — it lives in the source repo. To run the MCP end-to-end without a `tr_mcp_*` PAT, clone the repo for the mock side:
 
 ```bash
-npm run mock             # starts http://localhost:4000/api/v1
-npx @testrelic/mcp --caps core,coverage,creation --mock-mode
+# 1. Mock server (one-time clone)
+git clone https://github.com/testrelic-ai/testrelic-mcp-server
+cd testrelic-mcp-server
+npm install
+npm run mock                                # serves http://localhost:4000/api/v1
+
+# 2. In another terminal, point the published MCP at it
+npx -y @testrelic/mcp@latest --caps core,coverage,ai,marketplace,apps --mock-mode
 ```
+
+Or just use the workspace script that runs both concurrently from the source repo:
+
+```bash
+npm run dev:mock
+```
+
+`--mock-mode` defaults `--cloud-url` to `http://localhost:4000/api/v1`, so no token is needed; the mock returns deterministic fixtures for every tool.
 
 ## Cursor Agent Skill
 
@@ -186,9 +203,9 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 | `core` | `tr_health` | Server health. Reports upstream connectivity, cache state, and whether any circuit breakers are open. Call this before a long workflow to fail fast if something is down. |
 | `core` | `tr_integration_status` | Check integration health. Returns a live health check for one integration type in the current org (e.g. 'jira', 'amplitude', 'grafana-loki'). Call this when a tool that depends on an integration fails with INTEGRATION_NOT_CONNECTED — the error message tells you where to configure it in the cloud UI. |
 | `core` | `tr_list_repos` | List TestRelic repos. Lists repos the authenticated user can see in cloud-platform-app. Sourced from /api/v1/mcp/bootstrap — no upstream fetch per call. Use this first when you don't know which repo_id (== repoId) to target. |
-| `core` | `tr_recent_runs` | List recent test runs. Paginated list of recent runs. Supports filters by project, framework, status. Prefer this as the cheap entry point before diagnosing a specific run. |
+| `core` | `tr_recent_runs` | List recent test runs. Recent automated TEST RUNS (Playwright / Cypress / Jest / Vitest). Returns each run's status, pass/fail counts, branch, commit, duration. Use this as the cheap first step whenever the user asks 'what tests ran', 'show me my runs', 'how did last night's tests go', 'any failing tests', 'which builds failed', 'recent test results'. Filterable by repo, framework, status (passed/failed/running). Drill into a specific run with tr_diagnose_run. |
 | `coverage` | `tr_coverage_gaps` | Ranked coverage gaps. Returns the top-N user journeys with NO test covering them, ordered by user count. Each gap includes the pp coverage gain we'd get by covering it and any partial overlaps with existing tests. |
-| `coverage` | `tr_coverage_report` | Coverage report (95% readout). Returns user_coverage and test_coverage metrics with progress toward the 95/95 targets. Repeat calls return a 3-state diff (unchanged / diff / full) to cut token usage on iteration. |
+| `coverage` | `tr_coverage_report` | Test coverage report (95% readout). TEST COVERAGE for a repo — how much of the codebase is exercised by tests and how many user journeys are covered. Use when the user asks 'what's our test coverage', 'are we hitting 95%', 'how covered is repo X', 'coverage summary'. Returns user_coverage and test_coverage progress vs the 95/95 targets. Pair with tr_coverage_gaps to see what's missing. |
 | `coverage` | `tr_fetch_cached` | Fetch a cached full payload. Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency). |
 | `coverage` | `tr_test_map` | Test-to-journey/code-node map. Returns the test coverage map for a project — every test_id with the journeys and code nodes it exercises. Large responses are written to the blob store and summarised. |
 | `coverage` | `tr_user_journeys` | Top N Amplitude user journeys. Returns the top N user journeys for a project ordered by distinct users in the last 30 days. Uses L1+L2 cache with a 1h TTL. |
@@ -222,9 +239,9 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 | `triage` | `tr_ai_rca` | AI root cause analysis. Fetches the platform-generated RCA for a run (falls back to sampling when the platform has none). |
 | `triage` | `tr_compare_runs` | Compare two runs. Diffs two runs for regressions, fixes, and persistent failures. |
 | `triage` | `tr_create_jira` | Create a Jira ticket (with dedupe). Creates or returns an existing Jira ticket for a run. Populates with RCA and user impact when available. |
-| `triage` | `tr_diagnose_run` | Diagnose a failing run. Pulls run metadata, all failures, and ClickHouse flakiness scores; returns a compact diagnostic with video markers (when include_video is true). |
+| `triage` | `tr_diagnose_run` | Diagnose a failing test run. Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure. |
 | `triage` | `tr_dismiss_flaky` | Dismiss a test as known flaky. Marks a test as known-flaky (suppresses alerts) with a required reason. |
-| `triage` | `tr_flaky_audit` | Flaky-test audit. Ranks flaky tests above a threshold over a lookback window. |
+| `triage` | `tr_flaky_audit` | Flaky-test audit. Lists flaky tests in this org — tests whose pass/fail status changes between retries. Use when the user says 'show me flaky tests', 'which tests are unstable', 'why are these tests intermittent', 'flakiness report'. Ranks by flakiness score over a lookback window; pair with tr_dismiss_flaky to mark a test as known-flaky. |
 | `triage` | `tr_list_runs` | List recent runs (legacy alias of tr_recent_runs). Alias retained for v1 compatibility; behaviour identical to tr_recent_runs under the core capability. |
 | `triage` | `tr_search_failures` | Search failures by text. Searches recent failed runs for text matches across test names, error messages, and stack traces. |
 | `triage` | `tr_suggest_fix` | Platform-suggested fix. Returns the TestRelic platform's code-level fix suggestion for a named test in a run. |

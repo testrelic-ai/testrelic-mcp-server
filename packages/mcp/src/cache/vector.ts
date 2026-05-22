@@ -144,7 +144,13 @@ export class VectorStore {
         }
         this.usingHnsw = true;
       } catch (err) {
-        getLogger().warn({ err }, "hnswlib init failed; using linear scan fallback");
+        // hnswlib-node ships native bindings that don't load on every platform
+        // (notably some Alpine/musl + ARM combos and certain Node versions).
+        // Vector search transparently falls back to a linear cosine scan, so
+        // we log a short note at debug level — the full stack trace was just
+        // noise for users running the MCP via npx.
+        const msg = err instanceof Error ? err.message : String(err);
+        getLogger().debug({ msg }, "hnswlib-node native init failed — using linear scan fallback (this is fine for typical usage)");
         this.usingHnsw = false;
       }
     } else {

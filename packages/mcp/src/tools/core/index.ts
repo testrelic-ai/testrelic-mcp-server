@@ -110,7 +110,7 @@ export const coreTools: ToolDefinition[] = [
     capability: "core",
     title: "List recent test runs",
     description:
-      "Paginated list of recent runs. Supports filters by project, framework, status. Prefer this as the cheap entry point before diagnosing a specific run.",
+      "Recent automated TEST RUNS (Playwright / Cypress / Jest / Vitest). Returns each run's status, pass/fail counts, branch, commit, duration. Use this as the cheap first step whenever the user asks 'what tests ran', 'show me my runs', 'how did last night's tests go', 'any failing tests', 'which builds failed', 'recent test results'. Filterable by repo, framework, status (passed/failed/running). Drill into a specific run with tr_diagnose_run.",
     inputSchema: {
       project_id: z.string().optional(),
       framework: z.enum(["playwright", "cypress", "jest", "vitest"]).optional(),
