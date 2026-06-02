@@ -10,7 +10,7 @@ export function assertTestrelicKey(): void {
     throw new Error(
       "TESTRELIC_API_KEY is missing or invalid. " +
         "Set it via: export TESTRELIC_API_KEY=your_key " +
-        "(get yours from app.testrelic.ai/settings/api-keys)"
+        "(get yours from platform.testrelic.ai/settings/api-keys)"
     );
   }
 }

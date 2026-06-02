@@ -18,7 +18,7 @@ TestRelic Model Context Protocol (MCP) server for AI coding assistants.
 
 ## Configure once: authenticate
 
-1. Open `https://app.testrelic.ai/settings/mcp-tokens` (or your cloud-platform-app instance).
+1. Open `https://platform.testrelic.ai/settings/mcp-tokens` (or your cloud-platform-app instance).
 2. Click **Create Token**, copy the `tr_mcp_*` value.
 3. Store it:
 
@@ -112,7 +112,7 @@ mcp-server-testrelic [options]
 | `--config` | path | JSON config file (see `src/config.d.ts`). |
 | `--port` | int | Start HTTP transport on this port. stdio when unset. |
 | `--host` | string | HTTP bind host. Default `127.0.0.1`. |
-| `--cloud-url` | url | Base URL for cloud-platform-app. Default `https://app.testrelic.ai/api/v1`, or `<mockServerUrl>/api/v1` with `--mock-mode`. Env: `TESTRELIC_CLOUD_URL`. |
+| `--cloud-url` | url | Base URL for cloud-platform-app. Default `https://platform.testrelic.ai/api/v1`, or `<mockServerUrl>/api/v1` with `--mock-mode`. Env: `TESTRELIC_CLOUD_URL`. |
 | `--token` | str | MCP PAT (`tr_mcp_*`). Falls back to `TESTRELIC_MCP_TOKEN` then `~/.testrelic/token`. |
 | `--default-repo-id` | uuid | Repo to use when a tool doesn't specify `project_id`. |
 | `--output-dir` | path | Traces, reports, `metrics.jsonl`. Default `./.testrelic-output`. |

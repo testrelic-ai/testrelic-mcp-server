@@ -112,7 +112,7 @@ export interface ResolvedConfig {
   tokenBudgetPerTool: number;
 }
 
-const DEFAULT_CLOUD_URL = "https://app.testrelic.ai/api/v1";
+const DEFAULT_CLOUD_URL = "https://platform.testrelic.ai/api/v1";
 const TOKEN_FILE = join(homedir(), ".testrelic", "token");
 
 /**

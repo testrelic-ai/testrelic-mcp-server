@@ -64,7 +64,7 @@ function saveTokenToFile(token: string): string {
 }
 
 async function runLogin(flags: { token?: string; cloudUrl?: string }): Promise<void> {
-  const cloudUrl = flags.cloudUrl ?? "https://app.testrelic.ai";
+  const cloudUrl = flags.cloudUrl ?? "https://platform.testrelic.ai";
   const tokensUrl = cloudUrl.replace(/\/api\/v1\/?$/, "").replace(/\/$/, "") + "/settings/mcp-tokens";
   let token = flags.token ?? process.env.TESTRELIC_MCP_TOKEN;
   if (!token) {
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
     })
     .option("cloud-url", {
       type: "string",
-      describe: "Base URL for cloud-platform-app (env: TESTRELIC_CLOUD_URL). Defaults to https://app.testrelic.ai/api/v1 (prod) or mock-server URL in --mock-mode.",
+      describe: "Base URL for cloud-platform-app (env: TESTRELIC_CLOUD_URL). Defaults to https://platform.testrelic.ai/api/v1 (prod) or mock-server URL in --mock-mode.",
     })
     .option("token", {
       type: "string",

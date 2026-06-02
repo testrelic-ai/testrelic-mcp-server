@@ -31,7 +31,7 @@ The entire `integrations` block is gone from the config schema:
 
 ```diff
 + cloud: {
-+   baseUrl?: string;       // default https://app.testrelic.ai/api/v1
++   baseUrl?: string;       // default https://platform.testrelic.ai/api/v1
 +   token?: string;         // the MCP PAT
 +   defaultRepoId?: string; // optional; otherwise elicited per-tool
 + }
@@ -67,7 +67,7 @@ import { createServer } from "@testrelic/mcp";
 
 const { start, config } = await createServer({
   cloud: {
-    baseUrl: "https://app.testrelic.ai/api/v1",
+    baseUrl: "https://platform.testrelic.ai/api/v1",
     token: process.env.TESTRELIC_MCP_TOKEN,
   },
   capabilities: ["core", "coverage", "healing"],
