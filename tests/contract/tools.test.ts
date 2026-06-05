@@ -148,3 +148,29 @@ describe("contract: impact capability", () => {
     }
   });
 });
+
+describe("contract: devtools capability", () => {
+  it("tr_project_trends renders pass_rate as a 0–100 percentage (no 100x double-scale)", async () => {
+    const srv = await startInProcessServer();
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_project_trends")!;
+      const result = await tool.handler({ project_id: "PROJ-1", days: 7 }, srv.__ctx);
+      // Mock + real platform both return passRate on a 0–100 scale; the table must
+      // show e.g. "95.0%", never a double-scaled "9500.0%". Guards the unit-drift
+      // bug where the tool multiplied an already-0–100 value by 100.
+      expect(result.text).toMatch(/\b9\d\.\d%/);      // a plausible 90–99% value
+      expect(result.text).not.toMatch(/\d{3,}\.\d%/); // no 3+ digit percentage (9500.0%)
+      const s = result.structured as {
+        trends: { data: Array<{ pass_rate: number; total_runs: number }> };
+      };
+      expect(s.trends.data.length).toBeGreaterThan(0);
+      for (const p of s.trends.data) {
+        expect(p.pass_rate).toBeGreaterThan(1); // 0–100 scale, not a 0–1 fraction
+        expect(p.pass_rate).toBeLessThanOrEqual(100);
+        expect(typeof p.total_runs).toBe("number"); // backend bucket now carries totalRuns
+      }
+    } finally {
+      await srv.stop();
+    }
+  });
+});

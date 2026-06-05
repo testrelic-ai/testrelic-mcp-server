@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import { RUN_FILTER_FRAMEWORKS } from "../frameworks.js";
 
 /**
  * Triage capability — migration of the v1 tool set, plus one new entry
@@ -23,15 +24,20 @@ export const triageTools: ToolDefinition[] = [
       const run_id = input.run_id as string;
       const include_video = input.include_video as boolean | undefined;
       const [run, failureData, flakinessData] = await Promise.all([
-        ctx.clients.testrelic.getRun(run_id),
-        ctx.clients.testrelic.getRunFailures(run_id),
+        // Tolerate a missing/unknown run: getRun throws on not-found rather than
+        // null-derefing inside toRun. Surface a clean message instead of a 500.
+        ctx.clients.testrelic.getRun(run_id).catch(() => null),
+        ctx.clients.testrelic.getRunFailures(run_id).catch(() => ({ run_id, failures: [] })),
         ctx.clients.clickhouse.queryFlakinessScores(run_id).catch(() => ({ data: [], rows: 0 })),
       ]);
+      if (!run) {
+        return { text: `Run ${run_id} not found.`, structured: { run: null, failures: [] } };
+      }
       if (run.status === "passed") {
         return { text: `Run ${run_id} passed all ${run.total} tests in ${(run.duration_ms / 1000).toFixed(1)}s.`, structured: { run } };
       }
       const flakinessMap = new Map(flakinessData.data.map((f) => [f.test_id, f]));
-      const { failures } = failureData;
+      const failures = failureData?.failures ?? [];
       const lines: string[] = [
         `## Failure Diagnosis: ${run_id}`,
         "",
@@ -98,12 +104,20 @@ export const triageTools: ToolDefinition[] = [
     },
     aliases: [{ name: "testrelic_compare_runs", description: "Diff two runs." }],
     handler: async (input, ctx) => {
+      const run_id_a = input.run_id_a as string;
+      const run_id_b = input.run_id_b as string;
       const [runA, runB, failuresA, failuresB] = await Promise.all([
-        ctx.clients.testrelic.getRun(input.run_id_a as string),
-        ctx.clients.testrelic.getRun(input.run_id_b as string),
-        ctx.clients.testrelic.getRunFailures(input.run_id_a as string),
-        ctx.clients.testrelic.getRunFailures(input.run_id_b as string),
+        // getRun throws on a missing/unknown run; tolerate it so a bad id yields a
+        // clean message instead of an INTERNAL tool error (mirrors tr_diagnose_run).
+        ctx.clients.testrelic.getRun(run_id_a).catch(() => null),
+        ctx.clients.testrelic.getRun(run_id_b).catch(() => null),
+        ctx.clients.testrelic.getRunFailures(run_id_a).catch(() => ({ run_id: run_id_a, failures: [] })),
+        ctx.clients.testrelic.getRunFailures(run_id_b).catch(() => ({ run_id: run_id_b, failures: [] })),
       ]);
+      if (!runA || !runB) {
+        const missing = [!runA ? run_id_a : null, !runB ? run_id_b : null].filter(Boolean).join(", ");
+        return { text: `Cannot compare — run(s) not found: ${missing}.`, structured: { regressions: [], fixes: [], persistent: [] } };
+      }
       const failingInA = new Set(failuresA.failures.map((f) => f.test_id));
       const failingInB = new Set(failuresB.failures.map((f) => f.test_id));
       const regressions = failuresA.failures.filter((f) => !failingInB.has(f.test_id));
@@ -334,7 +348,7 @@ export const triageTools: ToolDefinition[] = [
     description: "Alias retained for v1 compatibility; behaviour identical to tr_recent_runs under the core capability.",
     inputSchema: {
       project_id: z.string().optional(),
-      framework: z.enum(["playwright", "cypress", "jest", "vitest"]).optional(),
+      framework: z.enum(RUN_FILTER_FRAMEWORKS).optional(),
       status: z.enum(["passed", "failed", "running", "cancelled"]).optional(),
       cursor: z.string().optional(),
       limit: z.number().int().min(1).max(20).optional().default(5),

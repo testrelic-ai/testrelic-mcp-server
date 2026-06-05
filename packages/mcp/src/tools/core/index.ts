@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
 import { version } from "../../version.js";
+import { RUN_FILTER_FRAMEWORKS } from "../frameworks.js";
 
 /**
  * Core capability — always on. Short, cheap introspection tools the agent
@@ -113,7 +114,7 @@ export const coreTools: ToolDefinition[] = [
       "Recent automated TEST RUNS (Playwright / Cypress / Jest / Vitest). Returns each run's status, pass/fail counts, branch, commit, duration. Use this as the cheap first step whenever the user asks 'what tests ran', 'show me my runs', 'how did last night's tests go', 'any failing tests', 'which builds failed', 'recent test results'. Filterable by repo, framework, status (passed/failed/running). Drill into a specific run with tr_diagnose_run.",
     inputSchema: {
       project_id: z.string().optional(),
-      framework: z.enum(["playwright", "cypress", "jest", "vitest"]).optional(),
+      framework: z.enum(RUN_FILTER_FRAMEWORKS).optional(),
       status: z.enum(["passed", "failed", "running", "cancelled"]).optional(),
       cursor: z.string().optional(),
       limit: z.number().int().min(1).max(20).optional().default(5),
