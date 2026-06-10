@@ -411,6 +411,66 @@ export function cloudOps(client: ServiceClient) {
       return client.get("/mcp/ai/usage");
     },
 
+    // ── Repo Memory surface (writes need the mcp:memory PAT scope) ───────
+    listRepoMemories(repoId: string, params?: {
+      testId?: string;
+      category?: string;
+      status?: string;
+      search?: string;
+      limit?: number;
+    }): Promise<{
+      memories: Array<{
+        id: string;
+        testId: string | null;
+        title: string;
+        content: string;
+        category: string;
+        source: string;
+        status: string;
+        conversationId: string | null;
+        createdAt: string;
+        updatedAt: string;
+        testMatched: boolean;
+        testTitle: string | null;
+      }>;
+      total: number;
+      stats: {
+        total: number;
+        byCategory: Record<string, number>;
+        mappedToTests: number;
+        unmatchedTests: number;
+      };
+    }> {
+      return client.get(`/repos/${encodeURIComponent(repoId)}/memory`, params as Record<string, unknown> | undefined);
+    },
+    getRepoMemoryDigest(repoId: string): Promise<{
+      repoId: string;
+      digest: string;
+      empty: boolean;
+    }> {
+      return client.get(`/repos/${encodeURIComponent(repoId)}/memory/digest`);
+    },
+    createRepoMemory(repoId: string, body: {
+      title: string;
+      content: string;
+      category?: string;
+      testId?: string;
+    }): Promise<{
+      memory: {
+        id: string;
+        testId: string | null;
+        title: string;
+        content: string;
+        category: string;
+        source: string;
+        status: string;
+        createdAt: string;
+        updatedAt: string;
+      };
+    }> {
+      return client.post(`/repos/${encodeURIComponent(repoId)}/memory`, body);
+    },
+
     // ── Marketplace surface (mcp:marketplace) ────────────────────────────
     listMarketplaceApps(): Promise<{
       apps: Array<{

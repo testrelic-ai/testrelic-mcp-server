@@ -521,6 +521,131 @@ router.get("/mcp/ai/usage", (_req: Request, res: Response) => {
   res.json({ monthlyTokenUsage: 125_000, monthlyTokenBudget: 1_000_000, monthlyRequestCount: 73, overLimit: false });
 });
 
+// ── /api/v1/repos/:repoId/memory* (Repo Memory) ────────────────────────────
+
+interface MockRepoMemory {
+  id: string;
+  testId: string | null;
+  title: string;
+  content: string;
+  category: string;
+  source: string;
+  status: string;
+  conversationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  testMatched: boolean;
+  testTitle: string | null;
+}
+
+const MOCK_REPO_MEMORIES: MockRepoMemory[] = [
+  {
+    id: "11111111-2222-3333-4444-555555555501",
+    testId: "checkout-applies-coupon",
+    title: "Quarantine 'checkout applies coupon' until cart API stabilizes",
+    content: "Flaky 9/30 runs; failures correlate with cart-service deploys, not test code.",
+    category: "decision",
+    source: "ask_ai",
+    status: "active",
+    conversationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee01",
+    createdAt: "2026-05-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z",
+    testMatched: true,
+    testTitle: "checkout > applies coupon",
+  },
+  {
+    id: "11111111-2222-3333-4444-555555555502",
+    testId: "legacy-cart-assertions",
+    title: "Rewrite cart assertions to poll-free expect()",
+    content: "Replace manual waits with web-first assertions across cart specs.",
+    category: "maintenance",
+    source: "mcp",
+    status: "active",
+    conversationId: null,
+    createdAt: "2026-05-10T00:00:00Z",
+    updatedAt: "2026-05-10T00:00:00Z",
+    testMatched: false,
+    testTitle: null,
+  },
+  {
+    id: "11111111-2222-3333-4444-555555555503",
+    testId: null,
+    title: "Login suite must keep using storageState auth seeding",
+    content: "Direct credential login rate-limits in stage; new specs reuse the seeded session fixture.",
+    category: "context",
+    source: "user",
+    status: "active",
+    conversationId: null,
+    createdAt: "2026-05-20T00:00:00Z",
+    updatedAt: "2026-05-20T00:00:00Z",
+    testMatched: false,
+    testTitle: null,
+  },
+];
+
+function mockMemoryStats(rows: MockRepoMemory[]) {
+  const active = rows.filter((m) => m.status === "active");
+  const byCategory: Record<string, number> = { decision: 0, insight: 0, maintenance: 0, context: 0 };
+  for (const m of active) byCategory[m.category] = (byCategory[m.category] ?? 0) + 1;
+  return {
+    total: active.length,
+    byCategory,
+    mappedToTests: active.filter((m) => m.testId && m.testMatched).length,
+    unmatchedTests: active.filter((m) => m.testId && !m.testMatched).length,
+  };
+}
+
+router.get("/repos/:repoId/memory", (req: Request, res: Response) => {
+  let rows = MOCK_REPO_MEMORIES;
+  const { testId, category, status, search } = req.query as Record<string, string | undefined>;
+  const effStatus = status ?? "active";
+  if (effStatus !== "all") rows = rows.filter((m) => m.status === effStatus);
+  if (testId) rows = rows.filter((m) => m.testId === testId);
+  if (category) rows = rows.filter((m) => m.category === category);
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter((m) => m.title.toLowerCase().includes(q) || m.content.toLowerCase().includes(q));
+  }
+  res.json({ memories: rows, total: rows.length, stats: mockMemoryStats(MOCK_REPO_MEMORIES) });
+});
+
+router.get("/repos/:repoId/memory/digest", (req: Request, res: Response) => {
+  const digest = [
+    "### Decisions",
+    "- Quarantine 'checkout applies coupon' until cart API stabilizes [test: checkout > applies coupon] — Flaky 9/30 runs; failures correlate with cart-service deploys, not test code.",
+    "### Maintenance notes",
+    "- Rewrite cart assertions to poll-free expect() (⚠ test spec no longer found — may be stale) — Replace manual waits with web-first assertions across cart specs.",
+    "### Context",
+    "- Login suite must keep using storageState auth seeding — Direct credential login rate-limits in stage; new specs reuse the seeded session fixture.",
+  ].join("\n");
+  res.json({ repoId: req.params.repoId, digest, empty: false });
+});
+
+router.post("/repos/:repoId/memory", (req: Request, res: Response) => {
+  const body = req.body as { title?: string; content?: string; category?: string; testId?: string };
+  if (!body.title || !body.content) {
+    res.status(400).json({ error: { code: "INVALID_INPUT", message: "title and content are required" } });
+    return;
+  }
+  const now = new Date().toISOString();
+  const memory: MockRepoMemory = {
+    id: `mock-memory-${MOCK_REPO_MEMORIES.length + 1}`,
+    testId: body.testId ?? null,
+    title: body.title,
+    content: body.content,
+    category: body.category ?? "insight",
+    source: "mcp",
+    status: "active",
+    conversationId: null,
+    createdAt: now,
+    updatedAt: now,
+    testMatched: false,
+    testTitle: null,
+  };
+  MOCK_REPO_MEMORIES.push(memory);
+  res.status(201).json({ memory });
+});
+
 // ── /api/v1/mcp/marketplace/* ──────────────────────────────────────────────
 
 const MOCK_MARKETPLACE_APPS = [

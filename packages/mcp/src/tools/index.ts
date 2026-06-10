@@ -11,6 +11,7 @@ import { aiTools } from "./ai/index.js";
 import { marketplaceTools } from "./marketplace/index.js";
 import { appsTools } from "./apps/index.js";
 import { artifactsTools } from "./artifacts/index.js";
+import { memoryTools } from "./memory/index.js";
 
 /**
  * Centralised tool bundle. The registry filters by capability; unknown
@@ -30,6 +31,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...marketplaceTools,
   ...appsTools,
   ...artifactsTools,
+  ...memoryTools,
 ];
 
 export function registerAllTools(ctx: ToolContext, registry: ToolRegistry): void {

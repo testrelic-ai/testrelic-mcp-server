@@ -31,6 +31,7 @@ export const CapabilitySchema = z.enum([
   "apps",
   "artifacts",
   "sessions",
+  "memory",
 ]);
 
 export const TransportSchema = z.enum(["stdio", "http"]);
