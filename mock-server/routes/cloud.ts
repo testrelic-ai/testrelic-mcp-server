@@ -707,9 +707,12 @@ router.get("/mcp/repos/:repoId/trends", (req: Request, res: Response) => {
     project_id: req.params.repoId,
     period_days: Number(req.query.days) || 30,
     data: [
-      { date: "2026-04-01", passRate: 0.95, flakiness: 0.03, durationMs: 45000 },
-      { date: "2026-04-02", passRate: 0.97, flakiness: 0.02, durationMs: 43000 },
-      { date: "2026-04-03", passRate: 0.96, flakiness: 0.02, durationMs: 44000 },
+      // Match the real getRepoTrends payload (cloud-platform-app
+      // mcp-stubs.controller.ts): passRate is a 0–100 PERCENTAGE, flakiness a
+      // 0–100 score, durationMs is milliseconds, and each bucket carries totalRuns.
+      { date: "2026-04-01", passRate: 95.0, flakiness: 3.0, durationMs: 45000, totalRuns: 12 },
+      { date: "2026-04-02", passRate: 97.0, flakiness: 2.0, durationMs: 43000, totalRuns: 15 },
+      { date: "2026-04-03", passRate: 96.0, flakiness: 2.0, durationMs: 44000, totalRuns: 11 },
     ],
   });
 });

@@ -95,6 +95,9 @@ interface PlatformRun {
   totalTests: number | null;
   summary: { passed?: number; failed?: number; skipped?: number; flaky?: number } | null;
   testFramework?: string;
+  /** Derived pass/fail result ("passed" | "failed" | "incomplete"), distinct
+   *  from the lifecycle `status`. Present on platforms that compute it. */
+  outcome?: string | null;
 }
 
 interface PlatformTestResult {
@@ -164,13 +167,33 @@ interface PlatformJiraSearch {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Map a platform run onto the MCP RunStatus. Prefers the server's derived
+ * pass/fail OUTCOME so a run with failures is never reported "passed" (the
+ * lifecycle `status` is just in_progress → completed). Falls back to the
+ * per-test failed counter, then the lifecycle status. An 'incomplete' outcome
+ * (aborted / partial upload) surfaces as 'cancelled' — never 'passed'. TEAI-224.
+ */
+function toRunStatus(r: PlatformRun): TestRun["status"] {
+  if (r.outcome === "passed" || r.outcome === "failed") return r.outcome;
+  if (r.outcome === "incomplete") return "cancelled";
+  if ((r.summary?.failed ?? 0) > 0) return "failed";
+  if (r.status === "completed") return "passed";
+  if (r.status === "in_progress" || r.status === "running") return "running";
+  // r.status is an unconstrained platform string; only pass through values that
+  // are valid MCP RunStatuses, else default to "running" rather than forcing an
+  // out-of-contract string into the union via an unchecked cast.
+  if (r.status === "passed" || r.status === "failed" || r.status === "cancelled") return r.status;
+  return "running";
+}
+
 function toRun(r: PlatformRun): TestRun {
   const s = r.summary ?? {};
   return {
     run_id: r.runId,
     project_id: r.repoId,
     framework: r.testFramework ?? "unknown",
-    status: (r.status === "completed" ? "passed" : (r.status as TestRun["status"])),
+    status: toRunStatus(r),
     total: r.totalTests ?? 0,
     passed: s.passed ?? 0,
     failed: s.failed ?? 0,
@@ -228,9 +251,21 @@ export function cloudOps(client: ServiceClient) {
       limit?: number;
     }): Promise<PaginatedResponse<TestRun>> {
       // "project_id" is a platform repoId — falls back to /runs (org-wide).
-      const { project_id, ...rest } = params;
+      const { project_id, status, ...rest } = params;
       const page = params.cursor ? parseInt(params.cursor, 10) : 1;
       const q: Record<string, unknown> = { ...rest, page };
+      // The MCP RunStatus (passed|failed|running|cancelled) is a derived OUTCOME
+      // for passed/failed but a lifecycle value for running. The platform filters
+      // on `outcome` (passed|failed|incomplete) and lifecycle `status` separately,
+      // so route each value to the right query param — otherwise status=failed
+      // matches nothing (every run's lifecycle status is "completed"). TEAI-226.
+      if (status === "passed" || status === "failed") q.outcome = status;
+      // 'cancelled' is how an 'incomplete' outcome surfaces on the read path
+      // (toRunStatus), so route the filter to the same outcome — otherwise the
+      // platform's lifecycle status never holds 'cancelled' and matches nothing.
+      else if (status === "cancelled") q.outcome = "incomplete";
+      else if (status === "running") q.status = "in_progress";
+      else if (status) q.status = status;
       if (project_id) {
         const r = await client.get<{ runs: PlatformRun[]; pagination: { page: number; limit: number; total: number } }>(
           `/repos/${encodeURIComponent(project_id)}/runs`,
@@ -256,6 +291,12 @@ export function cloudOps(client: ServiceClient) {
     },
     async getRun(runId: string): Promise<TestRun> {
       const r = await client.get<{ run: PlatformRun }>(`/runs/${encodeURIComponent(runId)}`);
+      // Guard a missing run record so callers get a clean "not found" rather than
+      // a null-deref inside toRun (the TEAI-223 crash: reading 'summary' of
+      // undefined). Tools wrap getRun in try/catch and surface a friendly message.
+      if (!r?.run) {
+        throw new Error(`Run ${runId} not found`);
+      }
       return toRun(r.run);
     },
     async getRunTests(repoId: string, runId: string): Promise<PlatformRunTests> {
@@ -551,7 +592,7 @@ export function cloudOps(client: ServiceClient) {
     getProjectTrendsV2(repoId: string, days = 30): Promise<{
       project_id: string;
       period_days: number;
-      data: Array<{ date: string; passRate: number; flakiness: number; durationMs: number }>;
+      data: Array<{ date: string; passRate: number; flakiness: number; durationMs: number; totalRuns?: number }>;
     }> {
       return client.get(`/mcp/repos/${encodeURIComponent(repoId)}/trends`, { days });
     },
@@ -661,22 +702,22 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         alert_threshold_flakiness: 15,
       };
     },
-    async getProjectTrends(project_id: string): Promise<ProjectTrends> {
+    async getProjectTrends(project_id: string, days = 30): Promise<ProjectTrends> {
       try {
-        const v2 = await cloud.getProjectTrendsV2(project_id, 30);
+        const v2 = await cloud.getProjectTrendsV2(project_id, days);
         return {
           project_id: v2.project_id,
           period_days: v2.period_days,
           data: v2.data.map((d) => ({
             date: d.date,
             pass_rate: d.passRate,
-            total_runs: 0,
+            total_runs: d.totalRuns ?? 0,
             avg_duration_ms: d.durationMs,
             flaky_count: Math.round(d.flakiness),
           })),
         };
       } catch {
-        return { project_id, period_days: 30, data: [] };
+        return { project_id, period_days: days, data: [] };
       }
     },
     async getActiveAlerts(): Promise<ActiveAlert[]> {

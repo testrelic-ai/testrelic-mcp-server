@@ -16,11 +16,14 @@ export const devtoolsTools: ToolDefinition[] = [
     inputSchema: { project_id: z.string(), days: z.number().int().min(1).max(90).optional().default(7) },
     aliases: [{ name: "testrelic_get_project_trends", description: "Project quality trends." }],
     handler: async (input, ctx) => {
-      const trends = await ctx.clients.testrelic.getProjectTrends(input.project_id as string);
+      const trends = await ctx.clients.testrelic.getProjectTrends(
+        input.project_id as string,
+        input.days as number | undefined,
+      );
       const recent = trends.data.slice(-(input.days as number | undefined ?? 7));
       const lines = [`## Trends — ${trends.project_id} (${recent.length}d)`, "", "| Date | Pass rate | Runs | Avg duration (s) | Flaky |", "|---|---|---|---|---|"];
       for (const p of recent) {
-        lines.push(`| ${p.date} | ${(p.pass_rate * 100).toFixed(1)}% | ${p.total_runs} | ${(p.avg_duration_ms / 1000).toFixed(1)} | ${p.flaky_count} |`);
+        lines.push(`| ${p.date} | ${p.pass_rate.toFixed(1)}% | ${p.total_runs} | ${(p.avg_duration_ms / 1000).toFixed(1)} | ${p.flaky_count} |`);
       }
       return { text: lines.join("\n"), structured: { trends: { ...trends, data: recent } } };
     },
