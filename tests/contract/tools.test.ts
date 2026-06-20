@@ -27,6 +27,7 @@ describe("contract: tool registry", () => {
       expect(caps.has("marketplace")).toBe(false);
       expect(caps.has("apps")).toBe(false);
       expect(caps.has("artifacts")).toBe(false);
+      expect(caps.has("memory")).toBe(false);
     } finally {
       await stop();
     }
@@ -60,6 +61,68 @@ describe("contract: tool registry", () => {
         expect(seen.has(a.name), `duplicate alias name: ${a.name}`).toBe(false);
         seen.add(a.name);
       }
+    }
+  });
+});
+
+describe("contract: memory capability", () => {
+  it("opt-in for the memory capability registers the three tools", async () => {
+    const { registeredTools, stop } = await startInProcessServer({ capabilities: ["memory"] });
+    try {
+      const names = new Set(registeredTools.map((t) => t.name));
+      expect(names.has("tr_get_repo_memory")).toBe(true);
+      expect(names.has("tr_list_repo_memories")).toBe(true);
+      expect(names.has("tr_save_repo_memory")).toBe(true);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("tr_get_repo_memory returns a digest grounded in team decisions", async () => {
+    const srv = await startInProcessServer({ capabilities: ["memory"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_get_repo_memory")!;
+      const result = await tool.handler({ project_id: "PROJ-1" }, srv.__ctx);
+      expect(result.text).toMatch(/Team memory|No team memory/);
+      const s = result.structured as { repoId?: string; digest?: string; empty?: boolean };
+      expect(typeof s.digest).toBe("string");
+      expect(typeof s.empty).toBe("boolean");
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  it("tr_list_repo_memories exposes test-spec mapping + stats", async () => {
+    const srv = await startInProcessServer({ capabilities: ["memory"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_list_repo_memories")!;
+      const result = await tool.handler({ project_id: "PROJ-1" }, srv.__ctx);
+      const s = result.structured as {
+        memories?: Array<{ testMatched?: boolean }>;
+        stats?: { unmatchedTests?: number; mappedToTests?: number };
+      };
+      expect(Array.isArray(s.memories)).toBe(true);
+      expect(typeof s.stats?.mappedToTests).toBe("number");
+      expect(typeof s.stats?.unmatchedTests).toBe("number");
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  it("tr_save_repo_memory persists and echoes the entry", async () => {
+    const srv = await startInProcessServer({ capabilities: ["memory"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_save_repo_memory")!;
+      const result = await tool.handler(
+        { project_id: "PROJ-1", title: "Contract-test memory", content: "Saved by the contract suite.", category: "insight" },
+        srv.__ctx,
+      );
+      expect(result.text).toMatch(/Saved repo memory/);
+      const s = result.structured as { saved?: boolean; memory?: { id?: string } };
+      expect(s.saved).toBe(true);
+      expect(typeof s.memory?.id).toBe("string");
+    } finally {
+      await srv.stop();
     }
   });
 });
