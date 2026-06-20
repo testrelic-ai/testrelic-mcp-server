@@ -1,6 +1,6 @@
 {
   "name": "@testrelic/mcp",
-  "version": "3.1.2",
+  "version": "3.2.0",
   "description": "TestRelic MCP Server — cloud-wired intelligent testing context (test creation, auto-healing, coverage gaps, test impact). One token; everything else is resolved.",
   "type": "module",
   "main": "./dist/index.js",
