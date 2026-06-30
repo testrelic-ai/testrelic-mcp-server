@@ -290,14 +290,21 @@ export function cloudOps(client: ServiceClient) {
       return { data: runs, total, next_cursor: next };
     },
     async getRun(runId: string): Promise<TestRun> {
-      const r = await client.get<{ run: PlatformRun }>(`/runs/${encodeURIComponent(runId)}`);
+      // GET /runs/:id returns the run object DIRECTLY (the dashboard's
+      // RunResponse); some shapes wrap it as { run }. Tolerate BOTH so a real
+      // (e.g. SDK-uploaded) run resolves instead of surfacing a phantom
+      // "not found" when only the direct shape is sent (TEAI-262).
+      const r = await client.get<{ run?: PlatformRun } & Partial<PlatformRun>>(
+        `/runs/${encodeURIComponent(runId)}`,
+      );
+      const raw = (r?.run ?? r) as PlatformRun | undefined;
       // Guard a missing run record so callers get a clean "not found" rather than
       // a null-deref inside toRun (the TEAI-223 crash: reading 'summary' of
       // undefined). Tools wrap getRun in try/catch and surface a friendly message.
-      if (!r?.run) {
+      if (!raw?.runId) {
         throw new Error(`Run ${runId} not found`);
       }
-      return toRun(r.run);
+      return toRun(raw);
     },
     async getRunTests(repoId: string, runId: string): Promise<PlatformRunTests> {
       return client.get<PlatformRunTests>(
@@ -315,8 +322,15 @@ export function cloudOps(client: ServiceClient) {
         `/repos/${encodeURIComponent(repoId)}/runs/${encodeURIComponent(runId)}/tests/${encodeURIComponent(testId)}`,
       );
     },
-    getRunTimeline(runId: string): Promise<{ timeline: Array<Record<string, unknown>> }> {
-      return client.get(`/runs/${encodeURIComponent(runId)}/timeline`);
+    async getRunTimeline(runId: string): Promise<{ timeline: Array<Record<string, unknown>> }> {
+      // GET /runs/:id/timeline returns { steps, total, runId } — NOT { timeline }.
+      // Normalize to { timeline } (accepting either field name) so downstream
+      // callers never read `undefined.filter(...)` when only `steps` is present (TEAI-262).
+      const r = await client.get<Record<string, unknown>>(
+        `/runs/${encodeURIComponent(runId)}/timeline`,
+      );
+      const rows = (r?.timeline ?? r?.steps ?? []) as Array<Record<string, unknown>>;
+      return { timeline: Array.isArray(rows) ? rows : [] };
     },
     getRunArtifacts(runId: string): Promise<{ run_id: string; artifacts: Array<{ kind: string; url: string; note?: string }> }> {
       return client.get(`/runs/${encodeURIComponent(runId)}/artifacts`);
@@ -686,9 +700,13 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       // Synthesize failures by asking the platform for run tests across all repos.
       // We don't know repoId here; use org-wide timeline as a fallback.
       const timeline = await cloud.getRunTimeline(runId).catch(() => ({ timeline: [] as Array<Record<string, unknown>> }));
+      // Defensive: getRunTimeline already normalizes to an array, but never let a
+      // malformed shape reach `.filter` (this was the "Cannot read properties of
+      // undefined (reading 'filter')" crash in tr_replay_failure — TEAI-262).
+      const rows = Array.isArray(timeline?.timeline) ? timeline.timeline : [];
       return {
         run_id: runId,
-        failures: timeline.timeline
+        failures: rows
           .filter((t) => String(t.status ?? "").toLowerCase() === "failed")
           .map((t) => ({
             test_id: String(t.testId ?? t.id ?? ""),
