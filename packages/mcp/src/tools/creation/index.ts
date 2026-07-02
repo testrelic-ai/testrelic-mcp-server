@@ -1,14 +1,37 @@
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
 import { TEMPLATES } from "./templates.js";
 import type { TestPlan } from "../../types/index.js";
-import { NotFoundError } from "../../errors.js";
+import { InvalidInputError, NotFoundError } from "../../errors.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve `candidate` against `baseDir` and guarantee the result stays inside
+ * `baseDir`. This blocks path traversal (`../`), absolute paths that point
+ * outside the sandbox, and (on Windows) cross-drive references. Anything that
+ * escapes — or resolves to the directory itself — is rejected.
+ *
+ * Security: the creation tools shell out to `tsc` on the resolved path, so an
+ * unconstrained path would let a caller type-check (and previously import) an
+ * arbitrary file anywhere on disk. Containment is the gate.
+ */
+function resolveWithinDir(baseDir: string, candidate: string): string {
+  const base = resolve(baseDir);
+  const resolved = resolve(base, candidate);
+  const rel = relative(base, resolved);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new InvalidInputError(
+      `Path "${candidate}" escapes the allowed output directory (${base}). Test files must live under it.`,
+      "PATH_TRAVERSAL",
+    );
+  }
+  return resolved;
+}
 
 /**
  * Creation capability — Planner, Generator, DryRun, AssertionHelper,
@@ -204,10 +227,15 @@ export const creationTools: ToolDefinition[] = [
       if (!template) {
         return { text: `Framework "${plan.framework}" has no template. Try playwright, cypress, jest, or vitest.`, structured: {} };
       }
-      const file_name = (input.file_name as string | undefined) ?? `generated-${plan.journey_id ?? Date.now()}${template.extension}`;
+      const defaultName = `generated-${plan.journey_id ?? Date.now()}${template.extension}`;
+      // Strip any directory components a caller may have smuggled in
+      // (`../`, absolute paths, drive letters) — we only ever write a bare
+      // filename into the generated/ subdir, and confirm containment below.
+      const rawName = input.file_name as string | undefined;
+      const file_name = rawName ? basename(rawName) || defaultName : defaultName;
       const outDir = join(ctx.config.outputDir, "generated");
       mkdirSync(outDir, { recursive: true });
-      const file_path = join(outDir, file_name);
+      const file_path = resolveWithinDir(outDir, file_name);
 
       const samplingPrompt = [
         `Write ${plan.framework} test code for the following plan:`,
@@ -279,20 +307,27 @@ export const creationTools: ToolDefinition[] = [
   {
     name: "tr_dry_run_test",
     capability: "creation",
-    title: "Dry-run: tsc + framework list",
+    title: "Dry-run: type-check the generated file",
     description:
-      "Type-checks the generated file (`tsc --noEmit`) and lists tests (`playwright test --list` when applicable). Returns first-pass errors so the agent can iterate before committing.",
+      "Type-checks a generated test file with `tsc --noEmit` and returns first-pass errors so the agent can iterate before committing. Only files under the configured output directory are accepted. Note: this intentionally does NOT run `playwright test --list` — that command imports (executes) the file, which is unsafe for untrusted/generated code.",
     inputSchema: {
-      file_path: z.string().describe("Path to the generated test file"),
+      file_path: z.string().describe("Path to the generated test file (must live under the configured outputDir)"),
       framework: z.enum(["playwright", "cypress", "jest", "vitest"]).optional().default("playwright"),
     },
     handler: async (input, ctx) => {
-      const file = input.file_path as string;
-      const framework = (input.framework as string | undefined) ?? "playwright";
+      const requested = input.file_path as string;
+      // Containment gate: only type-check files the generator itself wrote
+      // under outputDir. Rejects `../` traversal, absolute-outside, and
+      // cross-drive paths before we ever hand the path to a child process.
+      const file = resolveWithinDir(ctx.config.outputDir, requested);
       const results: { step: string; ok: boolean; output: string }[] = [];
 
       try {
-        const { stdout, stderr } = await execFileAsync("npx", ["--yes", "tsc", "--noEmit", "--skipLibCheck", file], {
+        // `tsc --noEmit` type-checks WITHOUT importing/executing the module,
+        // so it is safe for generated code. `--yes` is intentionally dropped:
+        // in a non-interactive context npx must not silently fetch+run a
+        // package from the registry — it uses the locally installed tsc or fails.
+        const { stdout, stderr } = await execFileAsync("npx", ["tsc", "--noEmit", "--skipLibCheck", file], {
           cwd: process.cwd(),
           timeout: ctx.config.timeouts.analysis,
         });
@@ -304,23 +339,6 @@ export const creationTools: ToolDefinition[] = [
           ok: false,
           output: `${anyErr.stdout ?? ""}\n${anyErr.stderr ?? ""}\n${anyErr.message ?? ""}`.trim() || String(err),
         });
-      }
-
-      if (framework === "playwright") {
-        try {
-          const { stdout, stderr } = await execFileAsync("npx", ["--yes", "playwright", "test", "--list", file], {
-            cwd: process.cwd(),
-            timeout: ctx.config.timeouts.analysis,
-          });
-          results.push({ step: "playwright test --list", ok: true, output: stdout + stderr });
-        } catch (err) {
-          const anyErr = err as { stdout?: string; stderr?: string; message?: string };
-          results.push({
-            step: "playwright test --list",
-            ok: false,
-            output: `${anyErr.stdout ?? ""}\n${anyErr.stderr ?? ""}\n${anyErr.message ?? ""}`.trim() || String(err),
-          });
-        }
       }
 
       const ok = results.every((r) => r.ok);
