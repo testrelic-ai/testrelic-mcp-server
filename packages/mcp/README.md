@@ -2,10 +2,11 @@
 
 TestRelic Model Context Protocol (MCP) server for AI coding assistants.
 
-> **v3.0.0 — cloud-wired.** The only thing you configure is one token. Every
+> **v3.1.0 — cloud-wired + Ask-AI surface.** The only thing you configure is one token. Every
 > integration (Jira, Amplitude, Grafana Loki, GitHub) is resolved server-side
 > from the authenticated user's organisation in cloud-platform-app — the MCP
-> never holds third-party secrets.
+> never holds third-party secrets. v3.1 adds Ask AI, Marketplace, connected
+> Apps, Artifacts, and Sessions surfaces — see capability table below.
 
 ## What it does
 
@@ -17,7 +18,7 @@ TestRelic Model Context Protocol (MCP) server for AI coding assistants.
 
 ## Configure once: authenticate
 
-1. Open `https://app.testrelic.ai/settings/mcp-tokens` (or your cloud-platform-app instance).
+1. Open `https://platform.testrelic.ai/settings/mcp-tokens` (or your cloud-platform-app instance).
 2. Click **Create Token**, copy the `tr_mcp_*` value.
 3. Store it:
 
@@ -44,12 +45,59 @@ laptop or in the MCP config.
 }
 ```
 
-With the local mock server (no cloud account needed):
+### Try it without a cloud account (`--mock-mode`)
+
+The mock server itself is not bundled in the npm package — it lives in the source repo. To run the MCP end-to-end without a `tr_mcp_*` PAT, clone the repo for the mock side:
 
 ```bash
-npm run mock             # starts http://localhost:4000/api/v1
-npx @testrelic/mcp --caps core,coverage,creation --mock-mode
+# 1. Mock server (one-time clone)
+git clone https://github.com/testrelic-ai/testrelic-mcp-server
+cd testrelic-mcp-server
+npm install
+npm run mock                                # serves http://localhost:4000/api/v1
+
+# 2. In another terminal, point the published MCP at it
+npx -y @testrelic/mcp@latest --caps core,coverage,ai,marketplace,apps --mock-mode
 ```
+
+Or just use the workspace script that runs both concurrently from the source repo:
+
+```bash
+npm run dev:mock
+```
+
+`--mock-mode` defaults `--cloud-url` to `http://localhost:4000/api/v1`, so no token is needed; the mock returns deterministic fixtures for every tool.
+
+## Cursor Agent Skill
+
+This package ships a Cursor Agent Skill that teaches your AI assistant to invoke
+`tr_*` tools correctly — auth, capability flags, MCP prompts, resources, bootstrap
+edge cases, and truncation recovery.
+
+**Activate it in your project (one-time):**
+
+```bash
+# Copy the skill into your repo's .cursor directory
+mkdir -p .cursor/skills/testrelic-mcp
+cp node_modules/@testrelic/mcp/.cursor/skills/testrelic-mcp/SKILL.md \
+   .cursor/skills/testrelic-mcp/SKILL.md
+```
+
+Or, if you used `npx` without installing:
+
+```bash
+mkdir -p .cursor/skills/testrelic-mcp
+npx @testrelic/mcp --print-skill > .cursor/skills/testrelic-mcp/SKILL.md
+```
+
+Once the file is in `.cursor/skills/testrelic-mcp/SKILL.md`, Cursor loads it
+automatically whenever you work in that repo — no further configuration needed.
+
+> The skill covers: two-credential distinction (`TESTRELIC_API_KEY` vs `tr_mcp_*`),
+> stdio vs HTTP transport, all capabilities including `config`, scenario → `--caps`
+> table, the three registered MCP prompts, all resource URIs, bootstrap failure
+> recovery, token-budget truncation + cache key retrieval, and deprecated alias
+> guidance.
 
 ## CLI
 
@@ -64,7 +112,7 @@ mcp-server-testrelic [options]
 | `--config` | path | JSON config file (see `src/config.d.ts`). |
 | `--port` | int | Start HTTP transport on this port. stdio when unset. |
 | `--host` | string | HTTP bind host. Default `127.0.0.1`. |
-| `--cloud-url` | url | Base URL for cloud-platform-app. Default `https://app.testrelic.ai/api/v1`, or `<mockServerUrl>/api/v1` with `--mock-mode`. Env: `TESTRELIC_CLOUD_URL`. |
+| `--cloud-url` | url | Base URL for cloud-platform-app. Default `https://platform.testrelic.ai/api/v1`, or `<mockServerUrl>/api/v1` with `--mock-mode`. Env: `TESTRELIC_CLOUD_URL`. |
 | `--token` | str | MCP PAT (`tr_mcp_*`). Falls back to `TESTRELIC_MCP_TOKEN` then `~/.testrelic/token`. |
 | `--default-repo-id` | uuid | Repo to use when a tool doesn't specify `project_id`. |
 | `--output-dir` | path | Traces, reports, `metrics.jsonl`. Default `./.testrelic-output`. |
@@ -129,19 +177,38 @@ Ready-made prompts exposed to clients:
 
 <!-- TOOLS-START -->
 
-_Auto-generated. Edit the tool source files, then run `npm run update-readme`._
+_Auto-generated from `ALL_TOOLS`. Edit the tool source files, run `npm run build`, then `npm run update-readme`._
+
+**66 tools** across 13 capabilities. Only `core` is always on; the rest are opt-in via `--caps` / `TESTRELIC_MCP_CAPS`.
 
 | Capability | Tool | Purpose |
 |---|---|---|
+| `ai` | `tr_ai_delete_conversation` | Delete an Ask-AI conversation. Permanently deletes a conversation and its messages. |
+| `ai` | `tr_ai_execute` | Execute an Ask-AI tool. Invokes any AI tool by name. Body: { tool_name, input }. Returns { result, artifact? }. When the tool produces an artifact (dashboard, report, test_plan, presentation, navigation_paths, session_workspace), the artifact is also addressable as `testrelic://artifacts/{id}` after the call. This is also how you generate artifacts: pass tool_name `generate_dashboard`, `generate_report`, `generate_test_plan`, `generate_presentation`, or `generate_navigation_paths` (these replaced the removed `tr_generate_*` tools). |
+| `ai` | `tr_ai_get_conversation` | Get one Ask-AI conversation. Returns the full message history for one conversation, including artifact references on assistant turns. |
+| `ai` | `tr_ai_list_conversations` | List Ask-AI conversations. Paginated list of conversations for the authenticated user. Use this to find a conversationId to continue. |
+| `ai` | `tr_ai_list_tools` | List Ask-AI tools. Catalog of every AI tool the platform exposes. Use this before `tr_ai_execute` to discover available tools and their input schemas. Output is paginated-friendly (one entry per tool). |
+| `ai` | `tr_ai_new_conversation` | Create a new conversation. Creates an empty conversation. Use the returned `id` as `conversationId` in subsequent `tr_ask_ai` calls. |
+| `ai` | `tr_ai_usage` | Ask-AI token usage. Current month's token usage vs the org's monthly budget. Use this to plan large Ask-AI workflows. |
+| `ai` | `tr_ask_ai` | Ask AI (single turn). Runs the Ask AI agent loop for a single user message. The platform handles LLM calls, tool orchestration, and artifact generation. Returns the assistant's response plus any artifacts it produced. Pass `conversationId` to continue an existing thread, or omit to start a new one. |
+| `apps` | `tr_apps_connect` | Connect an app. Initiates an OAuth connection for an app. Returns { redirectUrl, connectionId }. The user must open redirectUrl in a browser and complete the consent flow; the MCP cannot automate this. After consent, the connection becomes ACTIVE — poll `tr_apps_list` to confirm `connected: true`. |
+| `apps` | `tr_apps_disconnect` | Disconnect an app. Revokes a connection. Subsequent `tr_apps_execute` calls for the same app will fail until reconnected. |
+| `apps` | `tr_apps_execute` | Run an action on a connected app. Universal action runner. Body: { app, action, args }. Returns { ok, app, action, result }. Examples: send a Slack message, create a Notion page, create a Linear issue, post to HubSpot CRM, create a Google Calendar event, run a Salesforce query. The platform proxies the call using credentials it holds — never pass tokens or secrets in args. |
+| `apps` | `tr_apps_list` | List connected apps. Catalog of every app the org can connect through the Apps gateway, with current connection state. Each entry has { slug, name, category, connected, connectionId }. Call this before `tr_apps_execute` to confirm the app is connected — if not, run `tr_apps_connect` first. |
+| `apps` | `tr_apps_list_actions` | List actions an app exposes. Returns the action catalog for one connected app. Each action has { name, description, inputSchema }. Use this before `tr_apps_execute` to discover what operations are available (e.g. send_message, create_page, create_issue). |
+| `artifacts` | `tr_artifacts_export` | Export artifact to PNG or PDF. Renders an artifact via the platform's headless export pipeline and returns a presigned S3 URL valid for ~1 hour. Use this for sharing or attaching to emails/PRs. |
+| `artifacts` | `tr_artifacts_get` | Fetch one artifact. Returns the full JSON payload of one artifact. The payload shape depends on `type` — see the platform's artifact renderers for the contract. |
+| `artifacts` | `tr_artifacts_list` | List artifacts. Paginated list of artifacts. Filterable by conversationId, repoId, type (dashboard, report, test_plan, presentation, navigation_paths, session_workspace, etc.). Returns id, type, title, createdAt — fetch full payload with `tr_artifacts_get`. |
+| `artifacts` | `tr_artifacts_save_to_file` | Save artifact JSON to local file. Fetches an artifact and writes its JSON payload to a local file under the configured `outputDir`. Returns the absolute path so a downstream tool can hand it off (e.g. open in an editor). |
 | `core` | `tr_describe_repo` | Describe a repo. Returns a repo's integrations and capabilities. Sourced from the startup bootstrap — zero additional upstream calls. |
+| `core` | `tr_fetch_cached` | Fetch a cached full payload. Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency). Any tool result may be truncated to the token budget — when it is, the response carries a cacheKey you redeem here. |
 | `core` | `tr_get_config` | Resolved server config. Returns the resolved configuration — capabilities, transport, timeouts, cache/output dirs. Safe to call early to learn what tools/resources are available. |
 | `core` | `tr_health` | Server health. Reports upstream connectivity, cache state, and whether any circuit breakers are open. Call this before a long workflow to fail fast if something is down. |
 | `core` | `tr_integration_status` | Check integration health. Returns a live health check for one integration type in the current org (e.g. 'jira', 'amplitude', 'grafana-loki'). Call this when a tool that depends on an integration fails with INTEGRATION_NOT_CONNECTED — the error message tells you where to configure it in the cloud UI. |
 | `core` | `tr_list_repos` | List TestRelic repos. Lists repos the authenticated user can see in cloud-platform-app. Sourced from /api/v1/mcp/bootstrap — no upstream fetch per call. Use this first when you don't know which repo_id (== repoId) to target. |
-| `core` | `tr_recent_runs` | List recent test runs. Paginated list of recent runs. Supports filters by project, framework, status. Prefer this as the cheap entry point before diagnosing a specific run. |
+| `core` | `tr_recent_runs` | List recent test runs. Recent automated TEST RUNS (Playwright / Cypress / Jest / Vitest). Returns each run's status, pass/fail counts, branch, commit, duration. Use this as the cheap first step whenever the user asks 'what tests ran', 'show me my runs', 'how did last night's tests go', 'any failing tests', 'which builds failed', 'recent test results'. Filterable by repo, framework, status (passed/failed/running). Drill into a specific run with tr_diagnose_run. |
 | `coverage` | `tr_coverage_gaps` | Ranked coverage gaps. Returns the top-N user journeys with NO test covering them, ordered by user count. Each gap includes the pp coverage gain we'd get by covering it and any partial overlaps with existing tests. |
-| `coverage` | `tr_coverage_report` | Coverage report (95% readout). Returns user_coverage and test_coverage metrics with progress toward the 95/95 targets. Repeat calls return a 3-state diff (unchanged / diff / full) to cut token usage on iteration. |
-| `coverage` | `tr_fetch_cached` | Fetch a cached full payload. Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency). |
+| `coverage` | `tr_coverage_report` | Test coverage report (95% readout). TEST COVERAGE for a repo — how much of the codebase is exercised by tests and how many user journeys are covered. Use when the user asks 'what's our test coverage', 'are we hitting 95%', 'how covered is repo X', 'coverage summary'. Returns user_coverage and test_coverage progress vs the 95/95 targets. Pair with tr_coverage_gaps to see what's missing. |
 | `coverage` | `tr_test_map` | Test-to-journey/code-node map. Returns the test coverage map for a project — every test_id with the journeys and code nodes it exercises. Large responses are written to the blob store and summarised. |
 | `coverage` | `tr_user_journeys` | Top N Amplitude user journeys. Returns the top N user journeys for a project ordered by distinct users in the last 30 days. Uses L1+L2 cache with a 1h TTL. |
 | `creation` | `tr_dry_run_test` | Dry-run: type-check the generated file. Type-checks a generated test file with `tsc --noEmit` and returns first-pass errors so the agent can iterate before committing. Only files under the configured output directory are accepted. Note: this intentionally does NOT run `playwright test --list` — that command imports (executes) the file, which is unsafe for untrusted/generated code. |
@@ -160,18 +227,49 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 | `impact` | `tr_analyze_diff` | Analyze a diff for test impact. Parses a unified diff (or filename list) and returns the affected code nodes, the tests touching them, and an initial risk score based on Amplitude user counts on touched journeys. |
 | `impact` | `tr_risk_score` | Risk score for a diff. Lightweight blast-radius estimate using only Amplitude user counts on journeys whose tests cover the changed files. Faster than tr_analyze_diff when the agent only needs a go/no-go signal. |
 | `impact` | `tr_select_tests` | Select tests for a diff. Ranks tests into MUST / SHOULD / OPTIONAL buckets for a given diff. MUST = directly touches changed code. SHOULD = shares journey with a touched test. OPTIONAL = broader safety net. |
+| `marketplace` | `tr_marketplace_connect` | Connect a Marketplace app. Installs an apikey / basic / pat app. For OAuth apps, use `tr_marketplace_start_oauth` instead. Body: { slug, credentials } — keys must match the app's configFields. Returns { ok, id }. |
+| `marketplace` | `tr_marketplace_disconnect` | Disconnect a Marketplace app. Removes the app's credentials from the org. Existing test runs are unaffected. |
+| `marketplace` | `tr_marketplace_get_app` | Get one Marketplace app. Returns full detail for one app, including configFields needed by `tr_marketplace_connect`. |
+| `marketplace` | `tr_marketplace_invoke` | Invoke a Marketplace operation. Unified operation runner. Body: { slug, operation, args }. Each app exposes typed operations — e.g. jira.search, jira.create, github.runs, github.trigger, amplitude.events, browserstack.video, sentry.search, loki.query. The platform proxies using stored credentials; never pass tokens or secrets in args. |
+| `marketplace` | `tr_marketplace_list_apps` | List Marketplace apps. Full Marketplace catalog with connection status. Each entry includes auth method, MCP capabilities unlocked when connected, and a coming-soon flag. Returns roughly 7 first-class testing integrations. |
+| `marketplace` | `tr_marketplace_list_connections` | List active Marketplace connections. Returns just the connected apps for the org, with status and connectedAt. |
+| `marketplace` | `tr_marketplace_start_oauth` | Start OAuth for a Marketplace app. Returns { redirectUrl, state } for OAuth-only Marketplace apps. The user must open redirectUrl in a browser; the MCP cannot automate this. Poll `tr_marketplace_get_app` until `connected: true`. |
+| `marketplace` | `tr_marketplace_validate` | Validate Marketplace credentials. Validates credentials for an apikey / basic / pat app without writing them. Returns { ok, error? }. Use this before `tr_marketplace_connect` to surface auth issues without side effects. |
+| `memory` | `tr_get_repo_memory` | Get repo memory digest. Compact LLM-ready digest of the repo's team memory: test-maintenance decisions, insights, maintenance notes, and constraints. Call this BEFORE proposing test modifications so you don't contradict established team decisions. Entries about deleted tests are marked '⚠ test spec no longer found'. |
+| `memory` | `tr_list_repo_memories` | List repo memory entries. Raw, filterable list of repo memory entries with per-entry test-spec mapping (testMatched=false ⇒ the referenced test no longer exists; the memory may be stale) and aggregate stats (total, byCategory, mappedToTests, unmatchedTests). |
+| `memory` | `tr_save_repo_memory` | Save a repo memory entry. Persist a decision, insight, maintenance note, or constraint to the repo's team memory. Only save conclusions the user has explicitly agreed to. Requires the `mcp:memory` scope on the PAT (403 otherwise). Saved entries appear in the platform's Repo Detail → Memory tab and feed future AI context. |
 | `signals` | `tr_affected_sessions` | Amplitude sessions hit by a run's failures. Returns Amplitude sessions affected by a failing run (cohort for targeted communication or rollback). |
 | `signals` | `tr_production_signal` | Query production logs (Loki) for a signal. Ad-hoc Loki LogQL query over a time window. Results are trimmed and cached (5 min TTL). |
 | `signals` | `tr_user_impact` | Correlate a run with user impact. Pulls Amplitude affected-user counts and Loki error-rate for a failing run. Returns the business-level blast radius so the agent can prioritise. |
 | `triage` | `tr_ai_rca` | AI root cause analysis. Fetches the platform-generated RCA for a run (falls back to sampling when the platform has none). |
 | `triage` | `tr_compare_runs` | Compare two runs. Diffs two runs for regressions, fixes, and persistent failures. |
 | `triage` | `tr_create_jira` | Create a Jira ticket (with dedupe). Creates or returns an existing Jira ticket for a run. Populates with RCA and user impact when available. |
-| `triage` | `tr_diagnose_run` | Diagnose a failing run. Pulls run metadata, all failures, and ClickHouse flakiness scores; returns a compact diagnostic with video markers (when include_video is true). |
+| `triage` | `tr_diagnose_run` | Diagnose a failing test run. Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure. |
 | `triage` | `tr_dismiss_flaky` | Dismiss a test as known flaky. Marks a test as known-flaky (suppresses alerts) with a required reason. |
-| `triage` | `tr_flaky_audit` | Flaky-test audit. Ranks flaky tests above a threshold over a lookback window. |
-| `triage` | `tr_list_runs` | List recent runs (legacy alias of tr_recent_runs). Alias retained for v1 compatibility; behaviour identical to tr_recent_runs under the core capability. |
+| `triage` | `tr_flaky_audit` | Flaky-test audit. Lists flaky tests in this org — tests whose pass/fail status changes between retries. Use when the user says 'show me flaky tests', 'which tests are unstable', 'why are these tests intermittent', 'flakiness report'. Ranks by flakiness score over a lookback window; pair with tr_dismiss_flaky to mark a test as known-flaky. |
 | `triage` | `tr_search_failures` | Search failures by text. Searches recent failed runs for text matches across test names, error messages, and stack traces. |
 | `triage` | `tr_suggest_fix` | Platform-suggested fix. Returns the TestRelic platform's code-level fix suggestion for a named test in a run. |
+
+### Deprecated v1 aliases (14)
+
+Off by default since 3.3.0. Enable with `--legacy-aliases` or `TESTRELIC_MCP_LEGACY_ALIASES=1` only while migrating; each one duplicates a `tr_*` tool the client already sees.
+
+| Deprecated name | Use instead |
+|---|---|
+| `testrelic_compare_runs` | `tr_compare_runs` |
+| `testrelic_correlate_user_impact` | `tr_user_impact` |
+| `testrelic_create_jira_ticket` | `tr_create_jira` |
+| `testrelic_diagnose_failure` | `tr_diagnose_run` |
+| `testrelic_dismiss_flaky` | `tr_dismiss_flaky` |
+| `testrelic_get_active_alerts` | `tr_active_alerts` |
+| `testrelic_get_affected_sessions` | `tr_affected_sessions` |
+| `testrelic_get_ai_rca` | `tr_ai_rca` |
+| `testrelic_get_flaky_tests` | `tr_flaky_audit` |
+| `testrelic_get_production_signal` | `tr_production_signal` |
+| `testrelic_get_project_trends` | `tr_project_trends` |
+| `testrelic_list_runs` | `tr_recent_runs` |
+| `testrelic_search_failures` | `tr_search_failures` |
+| `testrelic_suggest_fix` | `tr_suggest_fix` |
 
 <!-- TOOLS-END -->
 

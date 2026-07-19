@@ -59,8 +59,24 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
         prompts: {},
         logging: {},
       },
-      instructions:
-        "TestRelic MCP — intelligent testing context for creation, healing, coverage, and impact. Start with `tr_list_repos` or `tr_coverage_report` to orient; capabilities are gated by the --caps flag to keep the tool schema small.",
+      instructions: [
+        "TestRelic MCP — the source of truth for everything about this org's automated tests.",
+        "",
+        "USE THESE TOOLS when the user mentions: test, tests, test run, test runs, test results, test report,",
+        "test case, test suite, failing test, failures, error, flaky / flakiness, regression,",
+        "coverage, journey, user journey, navigation, repo / repository, CI run, GitHub Actions run,",
+        "Jira ticket, dashboard, report, Ask AI, ask the AI, summarize my runs, analyze a run.",
+        "",
+        "Common entry points:",
+        "  • What tests ran? Which failed? Why? → tr_recent_runs → tr_diagnose_run",
+        "  • Test is flaky? → tr_flaky_audit → tr_dismiss_flaky",
+        "  • Coverage gap? → tr_coverage_report → tr_coverage_gaps → tr_plan_test",
+        "  • Show me apps connected to this org → tr_marketplace_list_apps / tr_apps_list",
+        "  • Free-form 'what does the platform know' → tr_ask_ai (single-turn agent loop)",
+        "",
+        "Repo discovery: call tr_list_repos first when you don't yet know a repo_id.",
+        "Capabilities are gated by --caps; if a tool you expect is missing, the user needs to re-launch with that cap.",
+      ].join("\n"),
     },
   );
 

@@ -10,7 +10,30 @@ import { createServer } from "./index.js";
 import { loadConfigFile, tokenFilePath } from "./config.js";
 import { getLogger } from "./logger.js";
 import { version } from "./version.js";
+import { CapabilitySchema } from "./config.js";
 import type { Capability, Config, LogLevel } from "./config.js";
+
+const VALID_CAPS: readonly Capability[] = CapabilitySchema.options;
+
+function parseCapsList(raw: string): Capability[] {
+  const out: Capability[] = [];
+  const unknown: string[] = [];
+  for (const part of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    if ((VALID_CAPS as readonly string[]).includes(part)) {
+      out.push(part as Capability);
+    } else {
+      unknown.push(part);
+    }
+  }
+  if (unknown.length) {
+    console.error(
+      `Unknown capability flag(s): ${unknown.join(", ")}\n` +
+        `Valid: ${VALID_CAPS.join(", ")}`,
+    );
+    process.exit(2);
+  }
+  return out;
+}
 
 /**
  * CLI surface for the TestRelic MCP server.
@@ -41,7 +64,7 @@ function saveTokenToFile(token: string): string {
 }
 
 async function runLogin(flags: { token?: string; cloudUrl?: string }): Promise<void> {
-  const cloudUrl = flags.cloudUrl ?? "https://app.testrelic.ai";
+  const cloudUrl = flags.cloudUrl ?? "https://platform.testrelic.ai";
   const tokensUrl = cloudUrl.replace(/\/api\/v1\/?$/, "").replace(/\/$/, "") + "/settings/mcp-tokens";
   let token = flags.token ?? process.env.TESTRELIC_MCP_TOKEN;
   if (!token) {
@@ -86,7 +109,10 @@ async function main(): Promise<void> {
     )
     .option("caps", {
       type: "string",
-      describe: "Comma-separated capabilities to enable (core is always on).",
+      describe:
+        "Comma-separated capabilities to enable (core is always on). " +
+        "Valid: core, coverage, creation, healing, impact, triage, signals, devtools, config, ai, marketplace, apps, artifacts, sessions. " +
+        "Example: --caps=triage,signals,ai",
     })
     .option("config", {
       type: "string",
@@ -126,7 +152,7 @@ async function main(): Promise<void> {
     })
     .option("cloud-url", {
       type: "string",
-      describe: "Base URL for cloud-platform-app (env: TESTRELIC_CLOUD_URL). Defaults to https://app.testrelic.ai/api/v1 (prod) or mock-server URL in --mock-mode.",
+      describe: "Base URL for cloud-platform-app (env: TESTRELIC_CLOUD_URL). Defaults to https://platform.testrelic.ai/api/v1 (prod) or mock-server URL in --mock-mode.",
     })
     .option("token", {
       type: "string",
@@ -156,6 +182,11 @@ async function main(): Promise<void> {
       type: "number",
       describe: "Per-tool token budget ceiling (default 4000).",
     })
+    .option("legacy-aliases", {
+      type: "boolean",
+      describe:
+        "Also register the deprecated v1 testrelic_* alias names (off by default since 3.3.0). Enable only while migrating a v1 consumer to the tr_* names.",
+    })
     .help()
     .alias("h", "help")
     .version(version)
@@ -178,7 +209,7 @@ async function main(): Promise<void> {
     ...(argv.port ? { server: { port: argv.port, host: argv.host } } : {}),
     ...(argv.caps
       ? {
-          capabilities: argv.caps.split(",").map((s: string) => s.trim()).filter(Boolean) as Capability[],
+          capabilities: parseCapsList(argv.caps as string),
         }
       : {}),
     ...(argv.outputDir ? { outputDir: argv.outputDir } : {}),
@@ -191,6 +222,7 @@ async function main(): Promise<void> {
     logLevel: argv.logLevel as LogLevel,
     ...(Object.keys(cliCloud).length > 0 ? { cloud: cliCloud } : {}),
     ...(argv.tokenBudget ? { tokenBudgetPerTool: argv.tokenBudget } : {}),
+    ...(argv.legacyAliases !== undefined ? { legacyAliases: argv.legacyAliases as boolean } : {}),
   };
 
   const { start, config, registeredTools } = await createServer({

@@ -54,8 +54,8 @@ export function testrelicOps(client: ServiceClient) {
     getProjectConfig(project_id: string): Promise<ProjectConfig> {
       return client.get(`/projects/${project_id}/config`);
     },
-    getProjectTrends(project_id: string): Promise<ProjectTrends> {
-      return client.get(`/projects/${project_id}/trends`);
+    getProjectTrends(project_id: string, days?: number): Promise<ProjectTrends> {
+      return client.get(`/projects/${project_id}/trends`, days != null ? { days } : undefined);
     },
     getActiveAlerts(): Promise<ActiveAlert[]> {
       return client.get("/alerts/active");

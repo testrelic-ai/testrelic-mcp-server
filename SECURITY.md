@@ -64,7 +64,7 @@ installer) can audit its risk surface in a single pass.
   2. Provide a `TESTRELIC_MCP_TOKEN` (a `tr_mcp_*` personal access token)
      via env var, `--token` flag, or `~/.testrelic/token` file.
   In this mode, every outbound call goes to the configured
-  `--cloud-url` (default `https://app.testrelic.ai/api/v1`) with
+  `--cloud-url` (default `https://platform.testrelic.ai/api/v1`) with
   `Authorization: Bearer <token>` — and nowhere else.
 - **No third-party credentials on the user's machine.** Integrations
   (Amplitude, Jira, Grafana Loki, GitHub, ClickHouse) are resolved by

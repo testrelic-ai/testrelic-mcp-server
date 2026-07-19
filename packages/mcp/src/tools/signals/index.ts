@@ -97,7 +97,3 @@ export const signalsTools: ToolDefinition[] = [
     },
   },
 ];
-
-export function registerSignalsTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of signalsTools) register(t);
-}

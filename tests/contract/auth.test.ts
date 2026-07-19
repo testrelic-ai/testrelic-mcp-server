@@ -36,7 +36,7 @@ describe("config: cloud + token collapse", () => {
 
   it("mockMode=false defaults to the production cloud URL", () => {
     const resolved = resolveConfig({ mockMode: false });
-    expect(resolved.cloud.baseUrl).toMatch(/^https:\/\/app\.testrelic\.ai/);
+    expect(resolved.cloud.baseUrl).toMatch(/^https:\/\/platform\.testrelic\.ai/);
   });
 
   it("configFromEnv reads TESTRELIC_CLOUD_URL and TESTRELIC_MCP_TOKEN", () => {

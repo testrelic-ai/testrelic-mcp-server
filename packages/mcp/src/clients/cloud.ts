@@ -68,6 +68,21 @@ export interface FlakinessResponse {
   scores: FlakinessRow[];
 }
 
+/**
+ * The platform's `/mcp/flakiness` returns `score` as a 0–100 integer
+ * percentage, while every internal consumer (`FlakyTest.flakiness_score`,
+ * threshold inputs, the score-bar rendering) works in 0–1 fractions. Normalize
+ * at this boundary — tolerantly, so a backend that later switches to fractions
+ * doesn't double-divide. Found by dogfooding: a score of 82 reached
+ * `"░".repeat(10 - 820)` and threw `Invalid count value: -810`, killing the
+ * whole tr_flaky_audit call.
+ */
+function toFraction(score: number): number {
+  const n = Number.isFinite(score) ? score : 0;
+  const f = n > 1 ? n / 100 : n;
+  return Math.min(1, Math.max(0, f));
+}
+
 // ── Platform response shapes we parse into legacy types ─────────────────────
 
 interface PlatformRepo {
@@ -95,6 +110,9 @@ interface PlatformRun {
   totalTests: number | null;
   summary: { passed?: number; failed?: number; skipped?: number; flaky?: number } | null;
   testFramework?: string;
+  /** Derived pass/fail result ("passed" | "failed" | "incomplete"), distinct
+   *  from the lifecycle `status`. Present on platforms that compute it. */
+  outcome?: string | null;
 }
 
 interface PlatformTestResult {
@@ -164,13 +182,33 @@ interface PlatformJiraSearch {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Map a platform run onto the MCP RunStatus. Prefers the server's derived
+ * pass/fail OUTCOME so a run with failures is never reported "passed" (the
+ * lifecycle `status` is just in_progress → completed). Falls back to the
+ * per-test failed counter, then the lifecycle status. An 'incomplete' outcome
+ * (aborted / partial upload) surfaces as 'cancelled' — never 'passed'. TEAI-224.
+ */
+function toRunStatus(r: PlatformRun): TestRun["status"] {
+  if (r.outcome === "passed" || r.outcome === "failed") return r.outcome;
+  if (r.outcome === "incomplete") return "cancelled";
+  if ((r.summary?.failed ?? 0) > 0) return "failed";
+  if (r.status === "completed") return "passed";
+  if (r.status === "in_progress" || r.status === "running") return "running";
+  // r.status is an unconstrained platform string; only pass through values that
+  // are valid MCP RunStatuses, else default to "running" rather than forcing an
+  // out-of-contract string into the union via an unchecked cast.
+  if (r.status === "passed" || r.status === "failed" || r.status === "cancelled") return r.status;
+  return "running";
+}
+
 function toRun(r: PlatformRun): TestRun {
   const s = r.summary ?? {};
   return {
     run_id: r.runId,
     project_id: r.repoId,
     framework: r.testFramework ?? "unknown",
-    status: (r.status === "completed" ? "passed" : (r.status as TestRun["status"])),
+    status: toRunStatus(r),
     total: r.totalTests ?? 0,
     passed: s.passed ?? 0,
     failed: s.failed ?? 0,
@@ -228,9 +266,21 @@ export function cloudOps(client: ServiceClient) {
       limit?: number;
     }): Promise<PaginatedResponse<TestRun>> {
       // "project_id" is a platform repoId — falls back to /runs (org-wide).
-      const { project_id, ...rest } = params;
+      const { project_id, status, ...rest } = params;
       const page = params.cursor ? parseInt(params.cursor, 10) : 1;
       const q: Record<string, unknown> = { ...rest, page };
+      // The MCP RunStatus (passed|failed|running|cancelled) is a derived OUTCOME
+      // for passed/failed but a lifecycle value for running. The platform filters
+      // on `outcome` (passed|failed|incomplete) and lifecycle `status` separately,
+      // so route each value to the right query param — otherwise status=failed
+      // matches nothing (every run's lifecycle status is "completed"). TEAI-226.
+      if (status === "passed" || status === "failed") q.outcome = status;
+      // 'cancelled' is how an 'incomplete' outcome surfaces on the read path
+      // (toRunStatus), so route the filter to the same outcome — otherwise the
+      // platform's lifecycle status never holds 'cancelled' and matches nothing.
+      else if (status === "cancelled") q.outcome = "incomplete";
+      else if (status === "running") q.status = "in_progress";
+      else if (status) q.status = status;
       if (project_id) {
         const r = await client.get<{ runs: PlatformRun[]; pagination: { page: number; limit: number; total: number } }>(
           `/repos/${encodeURIComponent(project_id)}/runs`,
@@ -255,8 +305,21 @@ export function cloudOps(client: ServiceClient) {
       return { data: runs, total, next_cursor: next };
     },
     async getRun(runId: string): Promise<TestRun> {
-      const r = await client.get<{ run: PlatformRun }>(`/runs/${encodeURIComponent(runId)}`);
-      return toRun(r.run);
+      // GET /runs/:id returns the run object DIRECTLY (the dashboard's
+      // RunResponse); some shapes wrap it as { run }. Tolerate BOTH so a real
+      // (e.g. SDK-uploaded) run resolves instead of surfacing a phantom
+      // "not found" when only the direct shape is sent (TEAI-262).
+      const r = await client.get<{ run?: PlatformRun } & Partial<PlatformRun>>(
+        `/runs/${encodeURIComponent(runId)}`,
+      );
+      const raw = (r?.run ?? r) as PlatformRun | undefined;
+      // Guard a missing run record so callers get a clean "not found" rather than
+      // a null-deref inside toRun (the TEAI-223 crash: reading 'summary' of
+      // undefined). Tools wrap getRun in try/catch and surface a friendly message.
+      if (!raw?.runId) {
+        throw new Error(`Run ${runId} not found`);
+      }
+      return toRun(raw);
     },
     async getRunTests(repoId: string, runId: string): Promise<PlatformRunTests> {
       return client.get<PlatformRunTests>(
@@ -274,8 +337,15 @@ export function cloudOps(client: ServiceClient) {
         `/repos/${encodeURIComponent(repoId)}/runs/${encodeURIComponent(runId)}/tests/${encodeURIComponent(testId)}`,
       );
     },
-    getRunTimeline(runId: string): Promise<{ timeline: Array<Record<string, unknown>> }> {
-      return client.get(`/runs/${encodeURIComponent(runId)}/timeline`);
+    async getRunTimeline(runId: string): Promise<{ timeline: Array<Record<string, unknown>> }> {
+      // GET /runs/:id/timeline returns { steps, total, runId } — NOT { timeline }.
+      // Normalize to { timeline } (accepting either field name) so downstream
+      // callers never read `undefined.filter(...)` when only `steps` is present (TEAI-262).
+      const r = await client.get<Record<string, unknown>>(
+        `/runs/${encodeURIComponent(runId)}/timeline`,
+      );
+      const rows = (r?.timeline ?? r?.steps ?? []) as Array<Record<string, unknown>>;
+      return { timeline: Array.isArray(rows) ? rows : [] };
     },
     getRunArtifacts(runId: string): Promise<{ run_id: string; artifacts: Array<{ kind: string; url: string; note?: string }> }> {
       return client.get(`/runs/${encodeURIComponent(runId)}/artifacts`);
@@ -323,6 +393,301 @@ export function cloudOps(client: ServiceClient) {
     }): Promise<PlatformJiraIssue> {
       return client.post("/integrations/jira/issues", body);
     },
+
+    // ── Ask AI surface (mcp:ai) ──────────────────────────────────────────
+    /**
+     * Catalog of every AI tool the platform exposes for execution via
+     * `/mcp/ai/tools/:name/execute`. Returns input schemas so the MCP client
+     * can validate args before calling.
+     */
+    listAiTools(): Promise<{ catalog: Array<{
+      name: string;
+      category: string;
+      description: string;
+      output: "text" | "artifact";
+      artifactType?: string;
+      inputSchema: Record<string, unknown>;
+    }> }> {
+      return client.get("/mcp/ai/tools");
+    },
+    executeAiTool(name: string, input: Record<string, unknown>): Promise<{
+      result: Record<string, unknown>;
+      artifact?: { id?: string; type: string; payload: Record<string, unknown> };
+    }> {
+      return client.post(`/mcp/ai/tools/${encodeURIComponent(name)}/execute`, { input });
+    },
+    runAgent(body: {
+      messages: Array<{ role: "user" | "assistant"; content: string }>;
+      conversationId?: string;
+      repoId?: string;
+      runId?: string;
+      maxToolRounds?: number;
+    }): Promise<{
+      conversationId: string;
+      messages: Array<{ role: string; content: string; artifacts?: Record<string, unknown>[] }>;
+      usage?: { inputTokens: number; outputTokens: number };
+    }> {
+      return client.post("/mcp/ai/agent", body);
+    },
+    listConversations(params?: { cursor?: string; limit?: number }): Promise<{
+      conversations: Array<{ id: string; title: string; createdAt: string; updatedAt: string; messageCount: number }>;
+      nextCursor: string | null;
+    }> {
+      return client.get("/mcp/ai/conversations", params as Record<string, unknown> | undefined);
+    },
+    getConversation(id: string): Promise<{
+      id: string;
+      title: string;
+      messages: Array<{ id: string; role: string; content: string; artifacts?: Record<string, unknown>[]; createdAt: string }>;
+    }> {
+      return client.get(`/mcp/ai/conversations/${encodeURIComponent(id)}`);
+    },
+    createConversation(body: { title?: string; repoId?: string }): Promise<{ id: string; title: string }> {
+      return client.post("/mcp/ai/conversations", body);
+    },
+    deleteConversation(id: string): Promise<{ ok: true }> {
+      return client.delete(`/mcp/ai/conversations/${encodeURIComponent(id)}`);
+    },
+    listArtifacts(params?: {
+      conversationId?: string;
+      repoId?: string;
+      type?: string;
+      cursor?: string;
+      limit?: number;
+    }): Promise<{
+      artifacts: Array<{ id: string; type: string; title: string; createdAt: string; conversationId: string }>;
+      nextCursor: string | null;
+    }> {
+      return client.get("/mcp/ai/artifacts", params as Record<string, unknown> | undefined);
+    },
+    getArtifact(id: string): Promise<{
+      id: string;
+      type: string;
+      title: string;
+      payload: Record<string, unknown>;
+      createdAt: string;
+    }> {
+      return client.get(`/mcp/ai/artifacts/${encodeURIComponent(id)}`);
+    },
+    exportArtifact(id: string, format: "png" | "pdf"): Promise<{ url: string; expiresAt: string }> {
+      return client.post(`/mcp/ai/artifacts/${encodeURIComponent(id)}/export`, { format });
+    },
+    getAiUsage(): Promise<{
+      monthlyTokenUsage: number;
+      monthlyTokenBudget: number;
+      monthlyRequestCount: number;
+      overLimit: boolean;
+    }> {
+      return client.get("/mcp/ai/usage");
+    },
+
+    // ── Repo Memory surface (writes need the mcp:memory PAT scope) ───────
+    listRepoMemories(repoId: string, params?: {
+      testId?: string;
+      category?: string;
+      status?: string;
+      search?: string;
+      limit?: number;
+    }): Promise<{
+      memories: Array<{
+        id: string;
+        testId: string | null;
+        title: string;
+        content: string;
+        category: string;
+        source: string;
+        status: string;
+        conversationId: string | null;
+        createdAt: string;
+        updatedAt: string;
+        testMatched: boolean;
+        testTitle: string | null;
+      }>;
+      total: number;
+      stats: {
+        total: number;
+        byCategory: Record<string, number>;
+        mappedToTests: number;
+        unmatchedTests: number;
+      };
+    }> {
+      return client.get(`/repos/${encodeURIComponent(repoId)}/memory`, params as Record<string, unknown> | undefined);
+    },
+    getRepoMemoryDigest(repoId: string): Promise<{
+      repoId: string;
+      digest: string;
+      empty: boolean;
+    }> {
+      return client.get(`/repos/${encodeURIComponent(repoId)}/memory/digest`);
+    },
+    createRepoMemory(repoId: string, body: {
+      title: string;
+      content: string;
+      category?: string;
+      testId?: string;
+    }): Promise<{
+      memory: {
+        id: string;
+        testId: string | null;
+        title: string;
+        content: string;
+        category: string;
+        source: string;
+        status: string;
+        createdAt: string;
+        updatedAt: string;
+      };
+    }> {
+      return client.post(`/repos/${encodeURIComponent(repoId)}/memory`, body);
+    },
+
+    // ── Marketplace surface (mcp:marketplace) ────────────────────────────
+    listMarketplaceApps(): Promise<{
+      apps: Array<{
+        slug: string;
+        name: string;
+        category: string;
+        description: string;
+        authMethod: string;
+        requiresOAuth: boolean;
+        capabilities: string[];
+        connected: boolean;
+        comingSoon: boolean;
+        docsUrl: string;
+      }>;
+    }> {
+      return client.get("/mcp/marketplace/apps");
+    },
+    getMarketplaceApp(slug: string): Promise<{
+      slug: string;
+      name: string;
+      category: string;
+      description: string;
+      authMethod: string;
+      requiresOAuth: boolean;
+      capabilities: string[];
+      connected: boolean;
+      configFields: Array<{ key: string; label: string; placeholder: string; helperText?: string; secret?: boolean }>;
+      docsUrl: string;
+    }> {
+      return client.get(`/mcp/marketplace/apps/${encodeURIComponent(slug)}`);
+    },
+    listMarketplaceConnections(): Promise<{
+      connections: Array<{ slug: string; status: string; connectedAt: string }>;
+    }> {
+      return client.get("/mcp/marketplace/connections");
+    },
+    validateMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/validate`, { credentials });
+    },
+    connectMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; id: string }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/connect`, { credentials });
+    },
+    startMarketplaceOAuth(slug: string): Promise<{ redirectUrl: string; state: string }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/oauth/start`, {});
+    },
+    disconnectMarketplaceApp(slug: string): Promise<{ ok: true }> {
+      return client.delete(`/mcp/marketplace/apps/${encodeURIComponent(slug)}`);
+    },
+    invokeMarketplaceApp(slug: string, operation: string, args: Record<string, unknown>): Promise<{
+      ok: boolean;
+      operation: string;
+      result: Record<string, unknown>;
+    }> {
+      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/invoke`, { operation, args });
+    },
+
+    // ── Connected Apps surface (mcp:apps) ────────────────────────────────
+    // Every method's response is renamed on the platform side so no third-party
+    // gateway brand name leaks. The CloudOps types use only "app" / "action".
+    listApps(): Promise<{
+      apps: Array<{ slug: string; name: string; category: string; connected: boolean; connectionId: string | null }>;
+    }> {
+      return client.get("/mcp/apps");
+    },
+    getApp(slug: string): Promise<{
+      slug: string;
+      name: string;
+      category: string;
+      connected: boolean;
+      connectionId: string | null;
+    }> {
+      return client.get(`/mcp/apps/${encodeURIComponent(slug)}`);
+    },
+    listAppActions(slug: string): Promise<{
+      actions: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+    }> {
+      return client.get(`/mcp/apps/${encodeURIComponent(slug)}/actions`);
+    },
+    listAppConnections(): Promise<{
+      connections: Array<{ id: string; app: string; status: string }>;
+    }> {
+      return client.get("/mcp/apps/connections");
+    },
+    startAppConnect(slug: string): Promise<{ redirectUrl: string; connectionId: string }> {
+      return client.post(`/mcp/apps/${encodeURIComponent(slug)}/connect`, {});
+    },
+    getAppConnection(connectionId: string): Promise<{ id: string; app: string; status: string }> {
+      return client.get(`/mcp/apps/connections/${encodeURIComponent(connectionId)}`);
+    },
+    disconnectAppConnection(connectionId: string): Promise<{ ok: true }> {
+      return client.delete(`/mcp/apps/connections/${encodeURIComponent(connectionId)}`);
+    },
+    appExecute(body: { app: string; action: string; args: Record<string, unknown> }): Promise<{
+      ok: boolean;
+      app: string;
+      action: string;
+      result: Record<string, unknown>;
+    }> {
+      return client.post("/mcp/apps/execute", body);
+    },
+
+    // ── Newly-exposed stubs (now backed by real endpoints) ───────────────
+    getAiRcaV2(runId: string): Promise<{
+      run_id: string;
+      root_cause: string;
+      confidence: number;
+      affected_component: string;
+      suggested_fix: string;
+      evidence: string[];
+      generated_at: string;
+    }> {
+      return client.get(`/mcp/runs/${encodeURIComponent(runId)}/rca`);
+    },
+    suggestFixV2(runId: string, body: { test_name: string }): Promise<{
+      run_id: string;
+      test_name: string;
+      suggestion: { description: string; code_diff: string; affected_files: string[]; confidence: number };
+    }> {
+      return client.post(`/mcp/runs/${encodeURIComponent(runId)}/suggest-fix`, body);
+    },
+    dismissFlakyV2(testId: string, body: { reason: string }): Promise<{
+      success: boolean;
+      test_id: string;
+      known_flaky: boolean;
+    }> {
+      return client.post(`/mcp/tests/${encodeURIComponent(testId)}/dismiss-flaky`, body);
+    },
+    getCodeMapV2(repoId: string): Promise<{ data: Array<{ id: string; type: string; name: string; file_path: string }> }> {
+      return client.get(`/mcp/repos/${encodeURIComponent(repoId)}/code-map`);
+    },
+    getAmplitudeSessionsV2(runId: string, limit = 50): Promise<{
+      run_id: string;
+      sessions: Array<{ session_id: string; user_id?: string; started_at: string; events: string[] }>;
+      total: number;
+    }> {
+      return client.get(`/mcp/integrations/amplitude/sessions`, { runId, limit });
+    },
+    getProjectTrendsV2(repoId: string, days = 30): Promise<{
+      project_id: string;
+      period_days: number;
+      data: Array<{ date: string; passRate: number; flakiness: number; durationMs: number; totalRuns?: number }>;
+    }> {
+      return client.get(`/mcp/repos/${encodeURIComponent(repoId)}/trends`, { days });
+    },
+    getActiveAlertsV2(): Promise<Array<{ id: string; type: string; severity: string; message: string; created_at: string }>> {
+      return client.get("/mcp/alerts/active");
+    },
   };
 }
 
@@ -350,9 +715,13 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       // Synthesize failures by asking the platform for run tests across all repos.
       // We don't know repoId here; use org-wide timeline as a fallback.
       const timeline = await cloud.getRunTimeline(runId).catch(() => ({ timeline: [] as Array<Record<string, unknown>> }));
+      // Defensive: getRunTimeline already normalizes to an array, but never let a
+      // malformed shape reach `.filter` (this was the "Cannot read properties of
+      // undefined (reading 'filter')" crash in tr_replay_failure — TEAI-262).
+      const rows = Array.isArray(timeline?.timeline) ? timeline.timeline : [];
       return {
         run_id: runId,
-        failures: timeline.timeline
+        failures: rows
           .filter((t) => String(t.status ?? "").toLowerCase() === "failed")
           .map((t) => ({
             test_id: String(t.testId ?? t.id ?? ""),
@@ -375,14 +744,16 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       days: number;
     }> {
       const res = await cloud.getFlakiness(p.project_id, p.days ?? 7);
-      const filtered = res.scores.filter((s) => s.score >= (p.threshold ?? 0));
+      // Compare fractions to fractions — the raw platform score is 0–100, the
+      // tool's `threshold` input is documented 0–1.
+      const filtered = res.scores.filter((s) => toFraction(s.score) >= (p.threshold ?? 0));
       return {
         data: filtered.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
           suite: s.suite,
           project_id: s.repoId,
-          flakiness_score: s.score,
+          flakiness_score: toFraction(s.score),
           failure_count: s.flakyRuns,
           pass_count: Math.max(0, s.totalRuns - s.flakyRuns),
           last_seen: s.updatedAt,
@@ -393,13 +764,18 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         days: res.window,
       };
     },
-    async dismissFlakyTest(_test_id: string, _reason: string): Promise<{
+    async dismissFlakyTest(test_id: string, reason: string): Promise<{
       success: boolean;
       test_id: string;
       known_flaky: boolean;
     }> {
-      // Not yet exposed by cloud-platform-app; surface clean failure.
-      return { success: false, test_id: _test_id, known_flaky: false };
+      try {
+        return await cloud.dismissFlakyV2(test_id, { reason });
+      } catch {
+        // Platform hasn't shipped /mcp/tests/:id/dismiss-flaky yet. Surface
+        // clean failure so the MCP client sees ok:false rather than 5xx.
+        return { success: false, test_id, known_flaky: false };
+      }
     },
     async getProjectConfig(project_id: string): Promise<ProjectConfig> {
       const bs = await cloud.bootstrap();
@@ -421,11 +797,38 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         alert_threshold_flakiness: 15,
       };
     },
-    async getProjectTrends(_project_id: string): Promise<ProjectTrends> {
-      return { project_id: _project_id, period_days: 30, data: [] };
+    async getProjectTrends(project_id: string, days = 30): Promise<ProjectTrends> {
+      try {
+        const v2 = await cloud.getProjectTrendsV2(project_id, days);
+        return {
+          project_id: v2.project_id,
+          period_days: v2.period_days,
+          data: v2.data.map((d) => ({
+            date: d.date,
+            pass_rate: d.passRate,
+            total_runs: d.totalRuns ?? 0,
+            avg_duration_ms: d.durationMs,
+            flaky_count: Math.round(d.flakiness),
+          })),
+        };
+      } catch {
+        return { project_id, period_days: days, data: [] };
+      }
     },
     async getActiveAlerts(): Promise<ActiveAlert[]> {
-      return [];
+      try {
+        const alerts = await cloud.getActiveAlertsV2();
+        return alerts.map((a) => ({
+          alert_id: a.id,
+          project_id: "",
+          type: a.type as ActiveAlert["type"],
+          severity: a.severity as ActiveAlert["severity"],
+          message: a.message,
+          triggered_at: a.created_at,
+        }));
+      } catch {
+        return [];
+      }
     },
     async getAiRca(run_id: string): Promise<{
       run_id: string;
@@ -436,31 +839,39 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       evidence: string[];
       generated_at: string;
     }> {
-      return {
-        run_id,
-        root_cause: "RCA endpoint not yet available on cloud-platform-app",
-        confidence: 0,
-        affected_component: "",
-        suggested_fix: "",
-        evidence: [],
-        generated_at: new Date().toISOString(),
-      };
+      try {
+        return await cloud.getAiRcaV2(run_id);
+      } catch {
+        return {
+          run_id,
+          root_cause: "RCA endpoint not yet available on cloud-platform-app",
+          confidence: 0,
+          affected_component: "",
+          suggested_fix: "",
+          evidence: [],
+          generated_at: new Date().toISOString(),
+        };
+      }
     },
     async suggestFix(run_id: string, test_name: string): Promise<{
       run_id: string;
       test_name: string;
       suggestion: { description: string; code_diff: string; affected_files: string[]; confidence: number };
     }> {
-      return {
-        run_id,
-        test_name,
-        suggestion: {
-          description: "suggest-fix not yet available on cloud-platform-app",
-          code_diff: "",
-          affected_files: [],
-          confidence: 0,
-        },
-      };
+      try {
+        return await cloud.suggestFixV2(run_id, { test_name });
+      } catch {
+        return {
+          run_id,
+          test_name,
+          suggestion: {
+            description: "suggest-fix not yet available on cloud-platform-app",
+            code_diff: "",
+            affected_files: [],
+            confidence: 0,
+          },
+        };
+      }
     },
     async listJourneys(project_id: string, limit = 50): Promise<{ data: UserJourney[]; total: number }> {
       // Best-effort: fetch journeys from the repo-navigation payload.
@@ -498,10 +909,27 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         })),
       };
     },
-    async getCodeMap(_project_id: string): Promise<{ data: CodeNode[] }> {
-      // cloud-platform-app does not yet expose a remote code map.
-      // Local mode is handled by CodeMap.loadLocal — this stub just returns empty.
-      return { data: [] };
+    async getCodeMap(project_id: string): Promise<{ data: CodeNode[] }> {
+      try {
+        const v2 = await cloud.getCodeMapV2(project_id);
+        return {
+          data: v2.data.map((n) => ({
+            id: n.id,
+            file: n.file_path,
+            name: n.name,
+            kind: (["function", "class", "method", "module"].includes(n.type)
+              ? n.type
+              : "function") as CodeNode["kind"],
+            start_line: 0,
+            end_line: 0,
+          })),
+        };
+      } catch {
+        // Platform either hasn't deployed /mcp/repos/:id/code-map yet or the
+        // repo has no indexed code map. Local mode (`tr_index_repo`) is the
+        // fallback — handled by CodeMap.loadLocal in the context engine.
+        return { data: [] };
+      }
     },
     async getCoverageReport(project_id: string): Promise<CoverageReport> {
       const impact = await cloud.getTestImpact(project_id).catch(() => ({} as Record<string, unknown>));
@@ -550,9 +978,23 @@ export function legacyAmplitudeAdapter(cloud: CloudOps) {
       return { run_id, affected_users: total, peak_time: peak.date, error_path: "" };
     },
     async getSessions(run_id: string, limit = 50): Promise<{ run_id: string; sessions: AmplitudeSession[]; total: number }> {
-      // Amplitude session export is not exposed by the proxy today.
-      const _ = limit; // acknowledged
-      return { run_id, sessions: [], total: 0 };
+      try {
+        const v2 = await cloud.getAmplitudeSessionsV2(run_id, limit);
+        return {
+          run_id: v2.run_id,
+          total: v2.total,
+          sessions: v2.sessions.map((s) => ({
+            session_id: s.session_id,
+            user_id: s.user_id ?? "",
+            device_type: "",
+            country: "",
+            error_event: s.events[0] ?? "",
+            occurred_at: s.started_at,
+          })),
+        };
+      } catch {
+        return { run_id, sessions: [], total: 0 };
+      }
     },
     async listTopJourneys(project_id: string, limit = 50): Promise<{
       project_id: string;
@@ -632,7 +1074,7 @@ export function legacyClickhouseAdapter(cloud: CloudOps) {
         data: r.scores.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
-          flakiness_score: s.score,
+          flakiness_score: toFraction(s.score),
           p90_duration_ms: 0,
           run_count_7d: s.totalRuns,
           failure_count_7d: s.flakyRuns,

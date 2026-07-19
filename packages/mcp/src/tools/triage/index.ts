@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import { RUN_FILTER_FRAMEWORKS } from "../frameworks.js";
 
 /**
  * Triage capability — migration of the v1 tool set, plus one new entry
@@ -11,9 +12,9 @@ export const triageTools: ToolDefinition[] = [
   {
     name: "tr_diagnose_run",
     capability: "triage",
-    title: "Diagnose a failing run",
+    title: "Diagnose a failing test run",
     description:
-      "Pulls run metadata, all failures, and ClickHouse flakiness scores; returns a compact diagnostic with video markers (when include_video is true).",
+      "Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure.",
     inputSchema: {
       run_id: z.string(),
       include_video: z.boolean().optional().default(false),
@@ -23,15 +24,20 @@ export const triageTools: ToolDefinition[] = [
       const run_id = input.run_id as string;
       const include_video = input.include_video as boolean | undefined;
       const [run, failureData, flakinessData] = await Promise.all([
-        ctx.clients.testrelic.getRun(run_id),
-        ctx.clients.testrelic.getRunFailures(run_id),
+        // Tolerate a missing/unknown run: getRun throws on not-found rather than
+        // null-derefing inside toRun. Surface a clean message instead of a 500.
+        ctx.clients.testrelic.getRun(run_id).catch(() => null),
+        ctx.clients.testrelic.getRunFailures(run_id).catch(() => ({ run_id, failures: [] })),
         ctx.clients.clickhouse.queryFlakinessScores(run_id).catch(() => ({ data: [], rows: 0 })),
       ]);
+      if (!run) {
+        return { text: `Run ${run_id} not found.`, structured: { run: null, failures: [] } };
+      }
       if (run.status === "passed") {
         return { text: `Run ${run_id} passed all ${run.total} tests in ${(run.duration_ms / 1000).toFixed(1)}s.`, structured: { run } };
       }
       const flakinessMap = new Map(flakinessData.data.map((f) => [f.test_id, f]));
-      const { failures } = failureData;
+      const failures = failureData?.failures ?? [];
       const lines: string[] = [
         `## Failure Diagnosis: ${run_id}`,
         "",
@@ -63,7 +69,8 @@ export const triageTools: ToolDefinition[] = [
     name: "tr_flaky_audit",
     capability: "triage",
     title: "Flaky-test audit",
-    description: "Ranks flaky tests above a threshold over a lookback window.",
+    description:
+      "Lists flaky tests in this org — tests whose pass/fail status changes between retries. Use when the user says 'show me flaky tests', 'which tests are unstable', 'why are these tests intermittent', 'flakiness report'. Ranks by flakiness score over a lookback window; pair with tr_dismiss_flaky to mark a test as known-flaky.",
     inputSchema: {
       project_id: z.string().optional(),
       days: z.number().int().min(1).max(90).optional().default(7),
@@ -79,7 +86,11 @@ export const triageTools: ToolDefinition[] = [
       if (!result.data.length) return { text: `No flaky tests above threshold.`, structured: { tests: [], total: 0 } };
       const lines = [`## Flaky Tests (${result.total} above threshold, last ${input.days ?? 7} days)`, ""];
       for (const t of result.data) {
-        const scoreBar = "█".repeat(Math.round(t.flakiness_score * 10)) + "░".repeat(10 - Math.round(t.flakiness_score * 10));
+        // Clamp defensively: the client normalizes scores to 0–1, but a bad
+        // value here must degrade the bar, never throw the whole tool
+        // (`"░".repeat(negative)` is a hard error).
+        const filled = Math.min(10, Math.max(0, Math.round(t.flakiness_score * 10)));
+        const scoreBar = "█".repeat(filled) + "░".repeat(10 - filled);
         lines.push(`- **${t.test_name}**${t.known_flaky ? ` [known: ${t.known_flaky_reason}]` : ""}`);
         lines.push(`  ${(t.flakiness_score * 100).toFixed(0)}% ${scoreBar} | ${t.failure_count}/${t.failure_count + t.pass_count} | ${t.suite} | ${t.test_id}`);
       }
@@ -97,12 +108,20 @@ export const triageTools: ToolDefinition[] = [
     },
     aliases: [{ name: "testrelic_compare_runs", description: "Diff two runs." }],
     handler: async (input, ctx) => {
+      const run_id_a = input.run_id_a as string;
+      const run_id_b = input.run_id_b as string;
       const [runA, runB, failuresA, failuresB] = await Promise.all([
-        ctx.clients.testrelic.getRun(input.run_id_a as string),
-        ctx.clients.testrelic.getRun(input.run_id_b as string),
-        ctx.clients.testrelic.getRunFailures(input.run_id_a as string),
-        ctx.clients.testrelic.getRunFailures(input.run_id_b as string),
+        // getRun throws on a missing/unknown run; tolerate it so a bad id yields a
+        // clean message instead of an INTERNAL tool error (mirrors tr_diagnose_run).
+        ctx.clients.testrelic.getRun(run_id_a).catch(() => null),
+        ctx.clients.testrelic.getRun(run_id_b).catch(() => null),
+        ctx.clients.testrelic.getRunFailures(run_id_a).catch(() => ({ run_id: run_id_a, failures: [] })),
+        ctx.clients.testrelic.getRunFailures(run_id_b).catch(() => ({ run_id: run_id_b, failures: [] })),
       ]);
+      if (!runA || !runB) {
+        const missing = [!runA ? run_id_a : null, !runB ? run_id_b : null].filter(Boolean).join(", ");
+        return { text: `Cannot compare — run(s) not found: ${missing}.`, structured: { regressions: [], fixes: [], persistent: [] } };
+      }
       const failingInA = new Set(failuresA.failures.map((f) => f.test_id));
       const failingInB = new Set(failuresB.failures.map((f) => f.test_id));
       const regressions = failuresA.failures.filter((f) => !failingInB.has(f.test_id));
@@ -326,33 +345,10 @@ export const triageTools: ToolDefinition[] = [
       return { text, structured: { ok: true, test_id: result.test_id } };
     },
   },
-  {
-    name: "tr_list_runs",
-    capability: "triage",
-    title: "List recent runs (legacy alias of tr_recent_runs)",
-    description: "Alias retained for v1 compatibility; behaviour identical to tr_recent_runs under the core capability.",
-    inputSchema: {
-      project_id: z.string().optional(),
-      framework: z.enum(["playwright", "cypress", "jest", "vitest"]).optional(),
-      status: z.enum(["passed", "failed", "running", "cancelled"]).optional(),
-      cursor: z.string().optional(),
-      limit: z.number().int().min(1).max(20).optional().default(5),
-    },
-    aliases: [{ name: "testrelic_list_runs", description: "List recent runs." }],
-    deprecated: true,
-    handler: async (input, ctx) => {
-      const result = await ctx.clients.testrelic.listRuns(input);
-      const { data: runs, next_cursor, total } = result;
-      if (!runs.length) return { text: "No test runs found.", structured: { runs: [] } };
-      const lines = [`## Test Runs (${runs.length} of ${total})`, ""];
-      for (const run of runs) {
-        lines.push(`- **${run.run_id}** [${run.status}] — ${run.failed} failed · ${run.flaky} flaky — ${run.branch}@${run.commit_sha}`);
-      }
-      return { text: lines.join("\n"), structured: { runs, next_cursor, total } };
-    },
-  },
+  // `tr_list_runs` was removed in 3.3.0. It was a self-declared identical
+  // duplicate of `tr_recent_runs` (same inputSchema, same
+  // clients.testrelic.listRuns call) and cost three registered names — itself,
+  // its alias, and the tool it duplicated. `tr_recent_runs` (capability: core)
+  // renders a strict superset: pass-rate and duration in addition to counts.
+  // Callers on the v1 name get it back via TESTRELIC_MCP_LEGACY_ALIASES=1.
 ];
-
-export function registerTriageTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of triageTools) register(t);
-}

@@ -136,6 +136,8 @@ export interface ProjectConfig {
 
 export interface TrendPoint {
   date: string;
+  /** Pass rate as a 0–100 PERCENTAGE (matches the platform getRepoTrends
+   *  payload). Render directly as `${pass_rate}%` — do NOT multiply by 100. */
   pass_rate: number;
   total_runs: number;
   avg_duration_ms: number;

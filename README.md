@@ -71,7 +71,7 @@ or first-time user can audit the full tool surface safely.
 
 When you are ready to point the plugin at your TestRelic cloud:
 
-1. Visit `https://app.testrelic.ai/settings/mcp-tokens` and create a
+1. Visit `https://platform.testrelic.ai/settings/mcp-tokens` and create a
    `tr_mcp_*` personal access token.
 2. Store it with either approach:
    - Run `npx @testrelic/mcp login` (writes `~/.testrelic/token`), or
@@ -80,7 +80,7 @@ When you are ready to point the plugin at your TestRelic cloud:
    Cursor MCP config).
 
 Every outbound call then goes to your configured
-`TESTRELIC_CLOUD_URL` (default `https://app.testrelic.ai/api/v1`) with
+`TESTRELIC_CLOUD_URL` (default `https://platform.testrelic.ai/api/v1`) with
 `Authorization: Bearer <token>` — and nowhere else. Per-service
 credentials (Amplitude, Jira, Grafana Loki, GitHub) never live on your
 machine; they are resolved inside the TestRelic cloud platform.

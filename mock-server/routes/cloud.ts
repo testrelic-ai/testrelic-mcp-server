@@ -392,4 +392,460 @@ router.get("/integrations/loki/logs", (req: Request, res: Response) => {
   res.json({ lines, total: lines.length });
 });
 
+// ── /api/v1/mcp/ai/* ───────────────────────────────────────────────────────
+// Mirror cloud-platform-app's Ask AI surface for --mock-mode.
+
+const MOCK_AI_TOOL_CATALOG = [
+  {
+    name: "query_test_runs",
+    category: "testing",
+    description: "Query test runs from the database with optional filters.",
+    output: "text",
+    inputSchema: { type: "object", properties: { repoName: { type: "string" }, limit: { type: "number" } } },
+  },
+  {
+    name: "generate_dashboard",
+    category: "artifacts",
+    description: "Produce a dashboard artifact (widget array).",
+    output: "artifact",
+    artifactType: "dashboard",
+    inputSchema: { type: "object", properties: { title: { type: "string" }, widgets: { type: "array" } } },
+  },
+  {
+    name: "generate_report",
+    category: "artifacts",
+    description: "Produce a markdown report artifact with structured sections.",
+    output: "artifact",
+    artifactType: "report",
+    inputSchema: { type: "object", properties: { title: { type: "string" }, sections: { type: "array" } } },
+  },
+];
+
+router.get("/mcp/ai/tools", (_req: Request, res: Response) => {
+  res.json({ catalog: MOCK_AI_TOOL_CATALOG });
+});
+
+router.post("/mcp/ai/tools/:toolName/execute", (req: Request, res: Response) => {
+  const tool = req.params.toolName;
+  const entry = MOCK_AI_TOOL_CATALOG.find((t) => t.name === tool);
+  if (!entry) return res.status(404).json({ error: { code: "TOOL_NOT_FOUND", message: `unknown tool ${tool}` } });
+  if (entry.output === "artifact") {
+    return res.json({
+      result: {},
+      artifact: {
+        id: `art-mock-${tool}-1`,
+        type: entry.artifactType,
+        payload: { title: `Mock ${entry.artifactType}`, generatedAt: new Date().toISOString() },
+      },
+    });
+  }
+  res.json({ result: { tool, mock: true, note: "deterministic mock response" } });
+});
+
+router.post("/mcp/ai/agent", (req: Request, res: Response) => {
+  const body = req.body as { messages?: Array<{ role: string; content: string }>; conversationId?: string };
+  const userMsg = body.messages?.find((m) => m.role === "user")?.content ?? "(empty)";
+  res.json({
+    conversationId: body.conversationId ?? "conv-mock-1",
+    messages: [
+      { role: "user", content: userMsg },
+      {
+        role: "assistant",
+        content: `Mock reply to: "${userMsg.slice(0, 80)}"`,
+        artifacts: [{ id: "art-mock-1", type: "dashboard", payload: { title: "Mock dashboard" } }],
+      },
+    ],
+    usage: { inputTokens: 100, outputTokens: 200 },
+  });
+});
+
+router.get("/mcp/ai/conversations", (_req: Request, res: Response) => {
+  res.json({
+    conversations: [
+      { id: "conv-mock-1", title: "Flaky tests last week", createdAt: "2026-04-01T00:00:00Z", updatedAt: "2026-04-02T00:00:00Z", messageCount: 4 },
+      { id: "conv-mock-2", title: "Coverage gaps review", createdAt: "2026-04-03T00:00:00Z", updatedAt: "2026-04-03T00:00:00Z", messageCount: 2 },
+    ],
+    nextCursor: null,
+  });
+});
+
+router.post("/mcp/ai/conversations", (req: Request, res: Response) => {
+  const body = req.body as { title?: string };
+  res.json({ id: "conv-mock-new", title: body.title ?? "New Chat" });
+});
+
+router.get("/mcp/ai/conversations/:id", (req: Request, res: Response) => {
+  res.json({
+    id: req.params.id,
+    title: "Mock conversation",
+    messages: [
+      { id: "m-1", role: "user", content: "Hello?", createdAt: "2026-04-01T00:00:00Z" },
+      { id: "m-2", role: "assistant", content: "Hi! How can I help with your tests today?", createdAt: "2026-04-01T00:00:01Z" },
+    ],
+  });
+});
+
+router.delete("/mcp/ai/conversations/:id", (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
+router.get("/mcp/ai/artifacts", (_req: Request, res: Response) => {
+  res.json({
+    artifacts: [
+      { id: "art-mock-1", type: "dashboard", title: "Mock dashboard", createdAt: "2026-04-01T00:00:00Z", conversationId: "conv-mock-1" },
+      { id: "art-mock-2", type: "report", title: "Mock report", createdAt: "2026-04-02T00:00:00Z", conversationId: "conv-mock-1" },
+    ],
+    nextCursor: null,
+  });
+});
+
+router.get("/mcp/ai/artifacts/:id", (req: Request, res: Response) => {
+  res.json({
+    id: req.params.id,
+    type: "dashboard",
+    title: "Mock dashboard",
+    payload: { title: "Mock dashboard", widgets: [{ id: "w1", type: "stat", label: "Pass rate", value: "97%" }] },
+    createdAt: "2026-04-01T00:00:00Z",
+  });
+});
+
+router.post("/mcp/ai/artifacts/:id/export", (req: Request, res: Response) => {
+  const body = req.body as { format?: "png" | "pdf" };
+  res.json({
+    url: `http://localhost:4000/mock-artifact-export/${req.params.id}.${body.format ?? "pdf"}`,
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+});
+
+router.get("/mcp/ai/usage", (_req: Request, res: Response) => {
+  res.json({ monthlyTokenUsage: 125_000, monthlyTokenBudget: 1_000_000, monthlyRequestCount: 73, overLimit: false });
+});
+
+// ── /api/v1/repos/:repoId/memory* (Repo Memory) ────────────────────────────
+
+interface MockRepoMemory {
+  id: string;
+  testId: string | null;
+  title: string;
+  content: string;
+  category: string;
+  source: string;
+  status: string;
+  conversationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  testMatched: boolean;
+  testTitle: string | null;
+}
+
+const MOCK_REPO_MEMORIES: MockRepoMemory[] = [
+  {
+    id: "11111111-2222-3333-4444-555555555501",
+    testId: "checkout-applies-coupon",
+    title: "Quarantine 'checkout applies coupon' until cart API stabilizes",
+    content: "Flaky 9/30 runs; failures correlate with cart-service deploys, not test code.",
+    category: "decision",
+    source: "ask_ai",
+    status: "active",
+    conversationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee01",
+    createdAt: "2026-05-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z",
+    testMatched: true,
+    testTitle: "checkout > applies coupon",
+  },
+  {
+    id: "11111111-2222-3333-4444-555555555502",
+    testId: "legacy-cart-assertions",
+    title: "Rewrite cart assertions to poll-free expect()",
+    content: "Replace manual waits with web-first assertions across cart specs.",
+    category: "maintenance",
+    source: "mcp",
+    status: "active",
+    conversationId: null,
+    createdAt: "2026-05-10T00:00:00Z",
+    updatedAt: "2026-05-10T00:00:00Z",
+    testMatched: false,
+    testTitle: null,
+  },
+  {
+    id: "11111111-2222-3333-4444-555555555503",
+    testId: null,
+    title: "Login suite must keep using storageState auth seeding",
+    content: "Direct credential login rate-limits in stage; new specs reuse the seeded session fixture.",
+    category: "context",
+    source: "user",
+    status: "active",
+    conversationId: null,
+    createdAt: "2026-05-20T00:00:00Z",
+    updatedAt: "2026-05-20T00:00:00Z",
+    testMatched: false,
+    testTitle: null,
+  },
+];
+
+function mockMemoryStats(rows: MockRepoMemory[]) {
+  const active = rows.filter((m) => m.status === "active");
+  const byCategory: Record<string, number> = { decision: 0, insight: 0, maintenance: 0, context: 0 };
+  for (const m of active) byCategory[m.category] = (byCategory[m.category] ?? 0) + 1;
+  return {
+    total: active.length,
+    byCategory,
+    mappedToTests: active.filter((m) => m.testId && m.testMatched).length,
+    unmatchedTests: active.filter((m) => m.testId && !m.testMatched).length,
+  };
+}
+
+router.get("/repos/:repoId/memory", (req: Request, res: Response) => {
+  let rows = MOCK_REPO_MEMORIES;
+  const { testId, category, status, search } = req.query as Record<string, string | undefined>;
+  const effStatus = status ?? "active";
+  if (effStatus !== "all") rows = rows.filter((m) => m.status === effStatus);
+  if (testId) rows = rows.filter((m) => m.testId === testId);
+  if (category) rows = rows.filter((m) => m.category === category);
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter((m) => m.title.toLowerCase().includes(q) || m.content.toLowerCase().includes(q));
+  }
+  res.json({ memories: rows, total: rows.length, stats: mockMemoryStats(MOCK_REPO_MEMORIES) });
+});
+
+router.get("/repos/:repoId/memory/digest", (req: Request, res: Response) => {
+  const digest = [
+    "### Decisions",
+    "- Quarantine 'checkout applies coupon' until cart API stabilizes [test: checkout > applies coupon] — Flaky 9/30 runs; failures correlate with cart-service deploys, not test code.",
+    "### Maintenance notes",
+    "- Rewrite cart assertions to poll-free expect() (⚠ test spec no longer found — may be stale) — Replace manual waits with web-first assertions across cart specs.",
+    "### Context",
+    "- Login suite must keep using storageState auth seeding — Direct credential login rate-limits in stage; new specs reuse the seeded session fixture.",
+  ].join("\n");
+  res.json({ repoId: req.params.repoId, digest, empty: false });
+});
+
+router.post("/repos/:repoId/memory", (req: Request, res: Response) => {
+  const body = req.body as { title?: string; content?: string; category?: string; testId?: string };
+  if (!body.title || !body.content) {
+    res.status(400).json({ error: { code: "INVALID_INPUT", message: "title and content are required" } });
+    return;
+  }
+  const now = new Date().toISOString();
+  const memory: MockRepoMemory = {
+    id: `mock-memory-${MOCK_REPO_MEMORIES.length + 1}`,
+    testId: body.testId ?? null,
+    title: body.title,
+    content: body.content,
+    category: body.category ?? "insight",
+    source: "mcp",
+    status: "active",
+    conversationId: null,
+    createdAt: now,
+    updatedAt: now,
+    testMatched: false,
+    testTitle: null,
+  };
+  MOCK_REPO_MEMORIES.push(memory);
+  res.status(201).json({ memory });
+});
+
+// ── /api/v1/mcp/marketplace/* ──────────────────────────────────────────────
+
+const MOCK_MARKETPLACE_APPS = [
+  { slug: "jira", name: "Jira", category: "ticketing", description: "Create and link Jira issues.", authMethod: "basic", requiresOAuth: false, capabilities: ["jira.search", "jira.create", "jira.status"], connected: true, comingSoon: false, docsUrl: "https://support.atlassian.com/jira-software-cloud" },
+  { slug: "github-actions", name: "GitHub Actions", category: "ci", description: "Trigger workflows and view runs.", authMethod: "pat", requiresOAuth: false, capabilities: ["github.runs", "github.logs", "github.trigger"], connected: false, comingSoon: false, docsUrl: "https://docs.github.com/en/actions" },
+  { slug: "amplitude", name: "Amplitude", category: "analytics", description: "Map test paths to user journeys.", authMethod: "apikey", requiresOAuth: false, capabilities: ["amplitude.events", "amplitude.paths"], connected: true, comingSoon: false, docsUrl: "https://amplitude.com/docs/apis/analytics/dashboard-rest" },
+];
+
+router.get("/mcp/marketplace/apps", (_req: Request, res: Response) => {
+  res.json({ apps: MOCK_MARKETPLACE_APPS });
+});
+
+router.get("/mcp/marketplace/apps/:slug", (req: Request, res: Response) => {
+  const app = MOCK_MARKETPLACE_APPS.find((a) => a.slug === req.params.slug);
+  if (!app) return res.status(404).json({ error: { code: "APP_NOT_FOUND" } });
+  res.json({
+    ...app,
+    configFields: [
+      { key: "apiKey", label: "API Key", placeholder: "Enter API key", secret: true },
+    ],
+  });
+});
+
+router.get("/mcp/marketplace/connections", (_req: Request, res: Response) => {
+  res.json({
+    connections: MOCK_MARKETPLACE_APPS
+      .filter((a) => a.connected)
+      .map((a) => ({ slug: a.slug, status: "connected", connectedAt: "2025-09-15T00:00:00Z" })),
+  });
+});
+
+router.post("/mcp/marketplace/apps/:slug/validate", (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
+router.post("/mcp/marketplace/apps/:slug/connect", (req: Request, res: Response) => {
+  res.json({ ok: true, id: `int-mock-${req.params.slug}` });
+});
+
+router.post("/mcp/marketplace/apps/:slug/oauth/start", (req: Request, res: Response) => {
+  res.json({
+    redirectUrl: `http://localhost:4000/mock-oauth/${req.params.slug}/authorize`,
+    state: "mock-state-token",
+  });
+});
+
+router.delete("/mcp/marketplace/apps/:slug", (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
+router.post("/mcp/marketplace/apps/:slug/invoke", (req: Request, res: Response) => {
+  const body = req.body as { operation?: string; args?: Record<string, unknown> };
+  res.json({
+    ok: true,
+    operation: body.operation ?? "",
+    result: { slug: req.params.slug, args: body.args, mock: true },
+  });
+});
+
+// ── /api/v1/mcp/apps/* (Connected Apps gateway — branded as "Apps" only) ──
+
+const MOCK_APPS = [
+  { slug: "slack", name: "Slack", category: "app", connected: true, connectionId: "conn-mock-slack" },
+  { slug: "notion", name: "Notion", category: "app", connected: false, connectionId: null },
+  { slug: "linear", name: "Linear", category: "app", connected: false, connectionId: null },
+];
+
+const MOCK_APP_ACTIONS: Record<string, Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>> = {
+  slack: [
+    { name: "send_message", description: "Send a message to a channel.", inputSchema: { type: "object", properties: { channel: { type: "string" }, text: { type: "string" } } } },
+    { name: "list_channels", description: "List channels.", inputSchema: { type: "object", properties: {} } },
+  ],
+  notion: [
+    { name: "create_page", description: "Create a page.", inputSchema: { type: "object", properties: { title: { type: "string" }, content: { type: "string" } } } },
+  ],
+  linear: [
+    { name: "create_issue", description: "Create an issue.", inputSchema: { type: "object", properties: { title: { type: "string" }, teamId: { type: "string" } } } },
+  ],
+};
+
+router.get("/mcp/apps", (_req: Request, res: Response) => {
+  res.json({ apps: MOCK_APPS });
+});
+
+router.get("/mcp/apps/:slug", (req: Request, res: Response) => {
+  const app = MOCK_APPS.find((a) => a.slug === req.params.slug);
+  if (!app) return res.status(404).json({ error: { code: "APP_NOT_FOUND" } });
+  res.json(app);
+});
+
+router.get("/mcp/apps/:slug/actions", (req: Request, res: Response) => {
+  const actions = MOCK_APP_ACTIONS[req.params.slug] ?? [];
+  res.json({ actions });
+});
+
+router.get("/mcp/apps/connections", (_req: Request, res: Response) => {
+  res.json({
+    connections: MOCK_APPS
+      .filter((a) => a.connected)
+      .map((a) => ({ id: a.connectionId!, app: a.slug, status: "ACTIVE" })),
+  });
+});
+
+router.post("/mcp/apps/:slug/connect", (req: Request, res: Response) => {
+  res.json({
+    redirectUrl: `http://localhost:4000/mock-oauth/apps/${req.params.slug}/authorize`,
+    connectionId: `conn-mock-${req.params.slug}-${Date.now()}`,
+  });
+});
+
+router.get("/mcp/apps/connections/:connectionId", (req: Request, res: Response) => {
+  res.json({ id: req.params.connectionId, app: "unknown", status: "ACTIVE" });
+});
+
+router.delete("/mcp/apps/connections/:connectionId", (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
+router.post("/mcp/apps/execute", (req: Request, res: Response) => {
+  const body = req.body as { app?: string; action?: string; args?: Record<string, unknown> };
+  res.json({
+    ok: true,
+    app: body.app ?? "",
+    action: body.action ?? "",
+    result: { args: body.args, mock: true, note: "deterministic mock action result" },
+  });
+});
+
+// ── /api/v1/mcp/* — filled stubs ──────────────────────────────────────────
+
+router.get("/mcp/runs/:runId/rca", (req: Request, res: Response) => {
+  res.json({
+    run_id: req.params.runId,
+    root_cause: "Mock RCA: timeout on /api/checkout endpoint",
+    confidence: 0.82,
+    affected_component: "checkout-service",
+    suggested_fix: "Increase timeout or add retry with backoff",
+    evidence: ["3 failing tests share the same stack frame", "Loki shows error rate spike at 12:04 UTC"],
+    generated_at: new Date().toISOString(),
+  });
+});
+
+router.post("/mcp/runs/:runId/suggest-fix", (req: Request, res: Response) => {
+  const body = req.body as { test_name?: string };
+  res.json({
+    run_id: req.params.runId,
+    test_name: body.test_name ?? "",
+    suggestion: {
+      description: "Mock fix: wait for visible state before clicking",
+      code_diff: "@@ -1 +1 @@\n-await page.click('#submit')\n+await page.getByRole('button', { name: 'Submit' }).click()",
+      affected_files: ["tests/checkout.spec.ts"],
+      confidence: 0.78,
+    },
+  });
+});
+
+router.post("/mcp/tests/:testId/dismiss-flaky", (req: Request, res: Response) => {
+  res.json({ success: true, test_id: req.params.testId, known_flaky: true });
+});
+
+router.get("/mcp/repos/:repoId/code-map", (_req: Request, res: Response) => {
+  res.json({
+    data: [
+      { id: "node-1", type: "function", name: "checkout", file_path: "src/checkout/index.ts" },
+      { id: "node-2", type: "class", name: "CartService", file_path: "src/cart/service.ts" },
+    ],
+  });
+});
+
+router.get("/mcp/integrations/amplitude/sessions", (req: Request, res: Response) => {
+  const runId = String(req.query.runId ?? "");
+  res.json({
+    run_id: runId,
+    total: 2,
+    sessions: [
+      { session_id: "sess-1", user_id: "user-1", started_at: "2026-04-01T12:00:00Z", events: ["page_view", "checkout_started"] },
+      { session_id: "sess-2", user_id: "user-2", started_at: "2026-04-01T12:05:00Z", events: ["page_view", "error"] },
+    ],
+  });
+});
+
+router.get("/mcp/repos/:repoId/trends", (req: Request, res: Response) => {
+  res.json({
+    project_id: req.params.repoId,
+    period_days: Number(req.query.days) || 30,
+    data: [
+      // Match the real getRepoTrends payload (cloud-platform-app
+      // mcp-stubs.controller.ts): passRate is a 0–100 PERCENTAGE, flakiness a
+      // 0–100 score, durationMs is milliseconds, and each bucket carries totalRuns.
+      { date: "2026-04-01", passRate: 95.0, flakiness: 3.0, durationMs: 45000, totalRuns: 12 },
+      { date: "2026-04-02", passRate: 97.0, flakiness: 2.0, durationMs: 43000, totalRuns: 15 },
+      { date: "2026-04-03", passRate: 96.0, flakiness: 2.0, durationMs: 44000, totalRuns: 11 },
+    ],
+  });
+});
+
+router.get("/mcp/alerts/active", (_req: Request, res: Response) => {
+  res.json([
+    { id: "alert-1", type: "flakiness_spike", severity: "warning", message: "Flakiness 18% (>15% threshold)", created_at: "2026-04-03T08:00:00Z" },
+  ]);
+});
+
 export default router;
