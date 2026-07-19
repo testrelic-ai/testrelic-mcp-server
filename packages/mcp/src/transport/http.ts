@@ -42,8 +42,21 @@ export function isLoopbackHost(host: string): boolean {
  * configured host, on our port. A browser page that rebinds a DNS name to
  * 127.0.0.1 sends its *own* hostname in the Host header, which will not match
  * any entry here and is rejected by the transport.
+ *
+ * `publicHosts` extends the list with the hostnames a fronting proxy/CDN
+ * forwards in the Host header. Without this, a hosted deployment (CloudFront →
+ * nginx `proxy_set_header Host $host` → this server) rejects EVERY real client
+ * with 403 "Invalid Host header" — which is exactly what happened to
+ * mcp-stage.testrelic.ai when this hardening first shipped: the allow-list
+ * only knew the bind address, so the protection took the whole hosted
+ * endpoint down rather than protecting it. Public entries are added both bare
+ * (proxies at :443/:80 forward `Host: name` with no port) and with our port.
  */
-export function buildAllowList(host: string, port: number): { allowedHosts: string[]; allowedOrigins: string[] } {
+export function buildAllowList(
+  host: string,
+  port: number,
+  publicHosts: readonly string[] = [],
+): { allowedHosts: string[]; allowedOrigins: string[] } {
   const hosts = new Set<string>([
     toHostHeader("127.0.0.1", port),
     toHostHeader("localhost", port),
@@ -53,6 +66,12 @@ export function buildAllowList(host: string, port: number): { allowedHosts: stri
   // Standard ports may arrive without an explicit `:port` in the Host header.
   if (port === 80 || port === 443) {
     for (const h of [...hosts]) hosts.add(h.replace(/:\d+$/, ""));
+  }
+  for (const raw of publicHosts) {
+    const h = raw.trim().toLowerCase();
+    if (!h) continue;
+    hosts.add(h);
+    hosts.add(toHostHeader(h, port));
   }
   const origins = new Set<string>();
   for (const h of hosts) {
@@ -75,7 +94,8 @@ export async function startHttp(
   // DNS-rebinding protection. Every session transport enforces this allow-list
   // of Host/Origin values so a malicious web page cannot drive this server via
   // the user's browser.
-  const { allowedHosts, allowedOrigins } = buildAllowList(host, port);
+  const { allowedHosts, allowedOrigins } = buildAllowList(host, port, config.server.publicHosts);
+  getLogger().info({ allowedHosts }, "http transport Host allow-list");
 
   if (!isLoopbackHost(host)) {
     getLogger().warn(

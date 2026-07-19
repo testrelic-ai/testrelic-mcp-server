@@ -90,6 +90,32 @@ describe("security: http DNS-rebinding allow-list (TEAI-280)", () => {
     expect(allowedHosts).toContain("[::1]:3000");
   });
 
+  /**
+   * The hosted-deployment regression: CloudFront → nginx forwards the PUBLIC
+   * hostname in the Host header (`proxy_set_header Host $host`), but the
+   * allow-list only knew the bind address — so mcp-stage.testrelic.ai rejected
+   * EVERY real client with 403 "Invalid Host header" from the moment this
+   * hardening shipped. Public hosts must be allowed both bare (a :443
+   * proxy forwards no port) and on our port.
+   */
+  it("publicHosts extends the allow-list for proxied deployments (bare + port)", () => {
+    const { allowedHosts, allowedOrigins } = buildAllowList("0.0.0.0", 3000, [
+      "mcp-stage.testrelic.ai",
+      " new.mcp-stage.testrelic.ai ", // whitespace tolerated
+    ]);
+    expect(allowedHosts).toContain("mcp-stage.testrelic.ai"); // as nginx forwards it
+    expect(allowedHosts).toContain("mcp-stage.testrelic.ai:3000");
+    expect(allowedHosts).toContain("new.mcp-stage.testrelic.ai");
+    expect(allowedOrigins).toContain("https://mcp-stage.testrelic.ai");
+    // The rebinding protection still rejects arbitrary names.
+    expect(allowedHosts).not.toContain("evil.example.com");
+  });
+
+  it("publicHosts defaults keep the strict local-only allow-list", () => {
+    const { allowedHosts } = buildAllowList("127.0.0.1", 3000);
+    expect(allowedHosts.every((h) => !h.includes("testrelic.ai"))).toBe(true);
+  });
+
   it("classifies loopback vs. non-loopback hosts", () => {
     expect(isLoopbackHost("127.0.0.1")).toBe(true);
     expect(isLoopbackHost("localhost")).toBe(true);

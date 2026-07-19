@@ -182,6 +182,11 @@ async function main(): Promise<void> {
       type: "number",
       describe: "Per-tool token budget ceiling (default 4000).",
     })
+    .option("public-hosts", {
+      type: "string",
+      describe:
+        "Comma-separated public hostnames a fronting proxy/CDN forwards in the Host header (e.g. mcp-stage.testrelic.ai). Required for hosted deployments or the DNS-rebinding allow-list rejects every proxied request.",
+    })
     .option("legacy-aliases", {
       type: "boolean",
       describe:
@@ -206,7 +211,21 @@ async function main(): Promise<void> {
   if (argv.defaultRepoId) cliCloud.defaultRepoId = argv.defaultRepoId as string;
 
   const cliConfig: Config = {
-    ...(argv.port ? { server: { port: argv.port, host: argv.host } } : {}),
+    ...(argv.port || argv.publicHosts
+      ? {
+          server: {
+            ...(argv.port ? { port: argv.port as number, host: argv.host as string } : {}),
+            ...(argv.publicHosts
+              ? {
+                  publicHosts: String(argv.publicHosts)
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                }
+              : {}),
+          },
+        }
+      : {}),
     ...(argv.caps
       ? {
           capabilities: parseCapsList(argv.caps as string),
