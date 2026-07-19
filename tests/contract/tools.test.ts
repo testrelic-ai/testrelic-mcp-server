@@ -63,6 +63,177 @@ describe("contract: tool registry", () => {
       }
     }
   });
+
+  // ── Anti-regrowth guards ────────────────────────────────────────────────
+  //
+  // Name-uniqueness alone did not catch the duplication that accumulated
+  // through 3.2.x: `tr_list_runs` was a byte-for-byte behavioural duplicate of
+  // `tr_recent_runs` and passed CI for months because the two strings differ.
+  // These three guards each would have failed on it.
+
+  /**
+   * Capability gating only pays off while the total surface stays small. The
+   * registry's own design comment claimed "~35 tools" while the real number had
+   * reached 86 — nobody noticed because nothing measured it.
+   *
+   * Raising this ceiling is a deliberate act: every registered name is sent in
+   * the tool-schema prelude of every request, to every client, forever. Prefer
+   * one tool with a discriminator parameter over two near-identical tools.
+   */
+  it("the registered surface stays under the agreed ceiling", () => {
+    const canonical = ALL_TOOLS.length;
+    const withAliases = canonical + ALL_TOOLS.reduce((n, t) => n + (t.aliases?.length ?? 0), 0);
+    expect(canonical, `canonical tools: ${canonical}`).toBeLessThanOrEqual(70);
+    expect(withAliases, `incl. legacy aliases: ${withAliases}`).toBeLessThanOrEqual(85);
+  });
+
+  /**
+   * A tool that describes itself as a duplicate is a duplicate. `tr_list_runs`
+   * was titled "legacy alias of tr_recent_runs" and described as "behaviour
+   * identical" — the information needed to delete it was sitting in its own
+   * registration the whole time. If a tool really is a compatibility shim, it
+   * belongs in `aliases` (which is opt-in), not as a canonical tool.
+   */
+  it("no canonical tool advertises itself as an alias or duplicate", () => {
+    const tell = /\b(legacy alias|alias of|behaviour identical|behavior identical|identical to)\b/i;
+    for (const t of ALL_TOOLS) {
+      const text = `${t.title} ${t.description}`;
+      expect(
+        tell.test(text),
+        `${t.name} declares itself a duplicate — move it to \`aliases\` or delete it: "${text.slice(0, 160)}"`,
+      ).toBe(false);
+    }
+  });
+
+  /**
+   * `deprecated: true` on a canonical tool is a contradiction: it is still
+   * registered, so it still costs prelude tokens for every client, while
+   * telling the model not to use it. Deprecate by moving the name into
+   * `aliases` (gated behind --legacy-aliases) or by removing it.
+   */
+  it("no canonical tool is marked deprecated while still registered", () => {
+    const deprecated = ALL_TOOLS.filter((t) => t.deprecated).map((t) => t.name);
+    expect(deprecated, `deprecated but still registered: ${deprecated.join(", ")}`).toEqual([]);
+  });
+
+  /**
+   * Truncation recovery must be reachable from every capability set. Every tool
+   * result is capped at tokenBudgetPerTool and returns a cacheKey; while
+   * `tr_fetch_cached` sat in `coverage`, a client on `--caps core,triage` got
+   * truncated payloads with no registered tool able to redeem the key.
+   */
+  it("tr_fetch_cached is reachable without the coverage capability", async () => {
+    const { registeredTools, stop } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const names = new Set(registeredTools.map((t) => t.name));
+      expect(names.has("tr_fetch_cached")).toBe(true);
+    } finally {
+      await stop();
+    }
+  });
+
+  /**
+   * Client/server version skew must degrade, never fail closed.
+   *
+   * `TESTRELIC_MCP_CAPS` is set by independently released clients — the shipped
+   * testrelic-cli pins `"core,...,config,ai,marketplace,apps,artifacts,sessions"`
+   * in `mcp_config.rs` and still sends the retired `config` and `sessions`. When
+   * the capability list was a strict Zod enum, one unrecognised name threw during
+   * config parse and the process exited **before registering any tool**, so the
+   * calling agent silently got zero TestRelic tools. That outage already happened
+   * once (the CLI sent a then-nonexistent `memory`).
+   */
+  it("retired and unknown capabilities are ignored, not fatal", async () => {
+    // The exact string the shipped CLI sends in Cloud mode.
+    const shippedCliCaps = [
+      "core", "coverage", "creation", "healing", "impact", "triage", "signals",
+      "devtools", "config", "ai", "marketplace", "apps", "artifacts", "sessions",
+    ];
+    const { registeredTools, stop } = await startInProcessServer({
+      capabilities: shippedCliCaps as never,
+    });
+    try {
+      // The real capabilities still registered — a partial surface, not none.
+      const names = new Set(registeredTools.map((t) => t.name));
+      expect(registeredTools.length).toBeGreaterThan(40);
+      expect(names.has("tr_recent_runs")).toBe(true);
+      expect(names.has("tr_ai_execute")).toBe(true);
+      expect(names.has("tr_marketplace_invoke")).toBe(true);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("a wholly unknown capability does not crash the server", async () => {
+    const { registeredTools, stop } = await startInProcessServer({
+      capabilities: ["core", "definitely_not_a_capability"] as never,
+    });
+    try {
+      expect(registeredTools.length).toBeGreaterThan(0);
+      expect(registeredTools.every((t) => t.capability === "core")).toBe(true);
+    } finally {
+      await stop();
+    }
+  });
+
+  /**
+   * Legacy v1 aliases are opt-in since 3.3.0. Default-on cost 14 registered
+   * names — 16% of the surface — for zero new capability.
+   */
+  it("legacy testrelic_* aliases are off by default and restorable on demand", async () => {
+    const off = await startInProcessServer({ capabilities: ["triage", "signals", "devtools"] });
+    try {
+      expect(off.registeredTools.some((t) => t.name.startsWith("testrelic_"))).toBe(false);
+    } finally {
+      await off.stop();
+    }
+
+    const on = await startInProcessServer({
+      capabilities: ["triage", "signals", "devtools"],
+      legacyAliases: true,
+    });
+    try {
+      const legacy = on.registeredTools.filter((t) => t.name.startsWith("testrelic_"));
+      expect(legacy.length).toBeGreaterThan(0);
+    } finally {
+      await on.stop();
+    }
+  });
+});
+
+describe("contract: triage capability", () => {
+  /**
+   * The platform's /mcp/flakiness returns `score` as a 0–100 percentage; the
+   * internal FlakyTest contract is a 0–1 fraction. Before normalization a real
+   * score of 82 reached `"░".repeat(10 - 820)` and threw
+   * `Invalid count value: -810`, killing the whole tool call. Found by
+   * scripts/dogfood-all.ts — the empty-data path passed, only real data threw.
+   */
+  it("tr_flaky_audit renders real scores without throwing and reports fractions", async () => {
+    const { registeredTools, stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      expect(registeredTools.some((t) => t.name === "tr_flaky_audit")).toBe(true);
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_flaky_audit")!;
+      const r = (await tool.handler({}, __ctx)) as {
+        text: string;
+        structured?: { tests?: Array<{ flakiness_score: number }> };
+        isError?: boolean;
+      };
+      expect(r.isError).not.toBe(true);
+      const tests = r.structured?.tests ?? [];
+      expect(tests.length).toBeGreaterThan(0);
+      for (const t of tests) {
+        expect(t.flakiness_score).toBeGreaterThanOrEqual(0);
+        expect(t.flakiness_score).toBeLessThanOrEqual(1);
+      }
+      // The score bar is exactly 10 cells — neither truncated nor exploded.
+      const bars = r.text.match(/[█░]+/g) ?? [];
+      expect(bars.length).toBeGreaterThan(0);
+      for (const bar of bars) expect(bar.length).toBe(10);
+    } finally {
+      await stop();
+    }
+  });
 });
 
 describe("contract: memory capability", () => {

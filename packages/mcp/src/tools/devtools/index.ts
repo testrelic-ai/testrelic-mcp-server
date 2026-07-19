@@ -105,7 +105,3 @@ export const devtoolsTools: ToolDefinition[] = [
     },
   },
 ];
-
-export function registerDevtoolsTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of devtoolsTools) register(t);
-}

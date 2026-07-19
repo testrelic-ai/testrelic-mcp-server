@@ -68,6 +68,21 @@ export interface FlakinessResponse {
   scores: FlakinessRow[];
 }
 
+/**
+ * The platform's `/mcp/flakiness` returns `score` as a 0–100 integer
+ * percentage, while every internal consumer (`FlakyTest.flakiness_score`,
+ * threshold inputs, the score-bar rendering) works in 0–1 fractions. Normalize
+ * at this boundary — tolerantly, so a backend that later switches to fractions
+ * doesn't double-divide. Found by dogfooding: a score of 82 reached
+ * `"░".repeat(10 - 820)` and threw `Invalid count value: -810`, killing the
+ * whole tr_flaky_audit call.
+ */
+function toFraction(score: number): number {
+  const n = Number.isFinite(score) ? score : 0;
+  const f = n > 1 ? n / 100 : n;
+  return Math.min(1, Math.max(0, f));
+}
+
 // ── Platform response shapes we parse into legacy types ─────────────────────
 
 interface PlatformRepo {
@@ -729,14 +744,16 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       days: number;
     }> {
       const res = await cloud.getFlakiness(p.project_id, p.days ?? 7);
-      const filtered = res.scores.filter((s) => s.score >= (p.threshold ?? 0));
+      // Compare fractions to fractions — the raw platform score is 0–100, the
+      // tool's `threshold` input is documented 0–1.
+      const filtered = res.scores.filter((s) => toFraction(s.score) >= (p.threshold ?? 0));
       return {
         data: filtered.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
           suite: s.suite,
           project_id: s.repoId,
-          flakiness_score: s.score,
+          flakiness_score: toFraction(s.score),
           failure_count: s.flakyRuns,
           pass_count: Math.max(0, s.totalRuns - s.flakyRuns),
           last_seen: s.updatedAt,
@@ -1057,7 +1074,7 @@ export function legacyClickhouseAdapter(cloud: CloudOps) {
         data: r.scores.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
-          flakiness_score: s.score,
+          flakiness_score: toFraction(s.score),
           p90_duration_ms: 0,
           run_count_7d: s.totalRuns,
           failure_count_7d: s.flakyRuns,

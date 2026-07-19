@@ -369,7 +369,3 @@ export const creationTools: ToolDefinition[] = [
     },
   },
 ];
-
-export function registerCreationTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of creationTools) register(t);
-}

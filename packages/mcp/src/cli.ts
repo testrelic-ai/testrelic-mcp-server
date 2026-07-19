@@ -182,6 +182,11 @@ async function main(): Promise<void> {
       type: "number",
       describe: "Per-tool token budget ceiling (default 4000).",
     })
+    .option("legacy-aliases", {
+      type: "boolean",
+      describe:
+        "Also register the deprecated v1 testrelic_* alias names (off by default since 3.3.0). Enable only while migrating a v1 consumer to the tr_* names.",
+    })
     .help()
     .alias("h", "help")
     .version(version)
@@ -217,6 +222,7 @@ async function main(): Promise<void> {
     logLevel: argv.logLevel as LogLevel,
     ...(Object.keys(cliCloud).length > 0 ? { cloud: cliCloud } : {}),
     ...(argv.tokenBudget ? { tokenBudgetPerTool: argv.tokenBudget } : {}),
+    ...(argv.legacyAliases !== undefined ? { legacyAliases: argv.legacyAliases as boolean } : {}),
   };
 
   const { start, config, registeredTools } = await createServer({

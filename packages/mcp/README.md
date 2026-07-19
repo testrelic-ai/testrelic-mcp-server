@@ -177,12 +177,14 @@ Ready-made prompts exposed to clients:
 
 <!-- TOOLS-START -->
 
-_Auto-generated. Edit the tool source files, then run `npm run update-readme`._
+_Auto-generated from `ALL_TOOLS`. Edit the tool source files, run `npm run build`, then `npm run update-readme`._
+
+**66 tools** across 13 capabilities. Only `core` is always on; the rest are opt-in via `--caps` / `TESTRELIC_MCP_CAPS`.
 
 | Capability | Tool | Purpose |
 |---|---|---|
 | `ai` | `tr_ai_delete_conversation` | Delete an Ask-AI conversation. Permanently deletes a conversation and its messages. |
-| `ai` | `tr_ai_execute` | Execute an Ask-AI tool. Invokes any AI tool by name. Body: { tool_name, input }. Returns { result, artifact? }. When the tool produces an artifact (dashboard, report, test_plan, presentation, navigation_paths, session_workspace), the artifact is also addressable as `testrelic://artifacts/{id}` after the call. |
+| `ai` | `tr_ai_execute` | Execute an Ask-AI tool. Invokes any AI tool by name. Body: { tool_name, input }. Returns { result, artifact? }. When the tool produces an artifact (dashboard, report, test_plan, presentation, navigation_paths, session_workspace), the artifact is also addressable as `testrelic://artifacts/{id}` after the call. This is also how you generate artifacts: pass tool_name `generate_dashboard`, `generate_report`, `generate_test_plan`, `generate_presentation`, or `generate_navigation_paths` (these replaced the removed `tr_generate_*` tools). |
 | `ai` | `tr_ai_get_conversation` | Get one Ask-AI conversation. Returns the full message history for one conversation, including artifact references on assistant turns. |
 | `ai` | `tr_ai_list_conversations` | List Ask-AI conversations. Paginated list of conversations for the authenticated user. Use this to find a conversationId to continue. |
 | `ai` | `tr_ai_list_tools` | List Ask-AI tools. Catalog of every AI tool the platform exposes. Use this before `tr_ai_execute` to discover available tools and their input schemas. Output is paginated-friendly (one entry per tool). |
@@ -199,6 +201,7 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 | `artifacts` | `tr_artifacts_list` | List artifacts. Paginated list of artifacts. Filterable by conversationId, repoId, type (dashboard, report, test_plan, presentation, navigation_paths, session_workspace, etc.). Returns id, type, title, createdAt — fetch full payload with `tr_artifacts_get`. |
 | `artifacts` | `tr_artifacts_save_to_file` | Save artifact JSON to local file. Fetches an artifact and writes its JSON payload to a local file under the configured `outputDir`. Returns the absolute path so a downstream tool can hand it off (e.g. open in an editor). |
 | `core` | `tr_describe_repo` | Describe a repo. Returns a repo's integrations and capabilities. Sourced from the startup bootstrap — zero additional upstream calls. |
+| `core` | `tr_fetch_cached` | Fetch a cached full payload. Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency). Any tool result may be truncated to the token budget — when it is, the response carries a cacheKey you redeem here. |
 | `core` | `tr_get_config` | Resolved server config. Returns the resolved configuration — capabilities, transport, timeouts, cache/output dirs. Safe to call early to learn what tools/resources are available. |
 | `core` | `tr_health` | Server health. Reports upstream connectivity, cache state, and whether any circuit breakers are open. Call this before a long workflow to fail fast if something is down. |
 | `core` | `tr_integration_status` | Check integration health. Returns a live health check for one integration type in the current org (e.g. 'jira', 'amplitude', 'grafana-loki'). Call this when a tool that depends on an integration fails with INTEGRATION_NOT_CONNECTED — the error message tells you where to configure it in the cloud UI. |
@@ -206,7 +209,6 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 | `core` | `tr_recent_runs` | List recent test runs. Recent automated TEST RUNS (Playwright / Cypress / Jest / Vitest). Returns each run's status, pass/fail counts, branch, commit, duration. Use this as the cheap first step whenever the user asks 'what tests ran', 'show me my runs', 'how did last night's tests go', 'any failing tests', 'which builds failed', 'recent test results'. Filterable by repo, framework, status (passed/failed/running). Drill into a specific run with tr_diagnose_run. |
 | `coverage` | `tr_coverage_gaps` | Ranked coverage gaps. Returns the top-N user journeys with NO test covering them, ordered by user count. Each gap includes the pp coverage gain we'd get by covering it and any partial overlaps with existing tests. |
 | `coverage` | `tr_coverage_report` | Test coverage report (95% readout). TEST COVERAGE for a repo — how much of the codebase is exercised by tests and how many user journeys are covered. Use when the user asks 'what's our test coverage', 'are we hitting 95%', 'how covered is repo X', 'coverage summary'. Returns user_coverage and test_coverage progress vs the 95/95 targets. Pair with tr_coverage_gaps to see what's missing. |
-| `coverage` | `tr_fetch_cached` | Fetch a cached full payload. Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency). |
 | `coverage` | `tr_test_map` | Test-to-journey/code-node map. Returns the test coverage map for a project — every test_id with the journeys and code nodes it exercises. Large responses are written to the blob store and summarised. |
 | `coverage` | `tr_user_journeys` | Top N Amplitude user journeys. Returns the top N user journeys for a project ordered by distinct users in the last 30 days. Uses L1+L2 cache with a 1h TTL. |
 | `creation` | `tr_dry_run_test` | Dry-run: tsc + framework list. Type-checks the generated file (`tsc --noEmit`) and lists tests (`playwright test --list` when applicable). Returns first-pass errors so the agent can iterate before committing. |
@@ -245,9 +247,29 @@ _Auto-generated. Edit the tool source files, then run `npm run update-readme`._
 | `triage` | `tr_diagnose_run` | Diagnose a failing test run. Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure. |
 | `triage` | `tr_dismiss_flaky` | Dismiss a test as known flaky. Marks a test as known-flaky (suppresses alerts) with a required reason. |
 | `triage` | `tr_flaky_audit` | Flaky-test audit. Lists flaky tests in this org — tests whose pass/fail status changes between retries. Use when the user says 'show me flaky tests', 'which tests are unstable', 'why are these tests intermittent', 'flakiness report'. Ranks by flakiness score over a lookback window; pair with tr_dismiss_flaky to mark a test as known-flaky. |
-| `triage` | `tr_list_runs` | List recent runs (legacy alias of tr_recent_runs). Alias retained for v1 compatibility; behaviour identical to tr_recent_runs under the core capability. |
 | `triage` | `tr_search_failures` | Search failures by text. Searches recent failed runs for text matches across test names, error messages, and stack traces. |
 | `triage` | `tr_suggest_fix` | Platform-suggested fix. Returns the TestRelic platform's code-level fix suggestion for a named test in a run. |
+
+### Deprecated v1 aliases (14)
+
+Off by default since 3.3.0. Enable with `--legacy-aliases` or `TESTRELIC_MCP_LEGACY_ALIASES=1` only while migrating; each one duplicates a `tr_*` tool the client already sees.
+
+| Deprecated name | Use instead |
+|---|---|
+| `testrelic_compare_runs` | `tr_compare_runs` |
+| `testrelic_correlate_user_impact` | `tr_user_impact` |
+| `testrelic_create_jira_ticket` | `tr_create_jira` |
+| `testrelic_diagnose_failure` | `tr_diagnose_run` |
+| `testrelic_dismiss_flaky` | `tr_dismiss_flaky` |
+| `testrelic_get_active_alerts` | `tr_active_alerts` |
+| `testrelic_get_affected_sessions` | `tr_affected_sessions` |
+| `testrelic_get_ai_rca` | `tr_ai_rca` |
+| `testrelic_get_flaky_tests` | `tr_flaky_audit` |
+| `testrelic_get_production_signal` | `tr_production_signal` |
+| `testrelic_get_project_trends` | `tr_project_trends` |
+| `testrelic_list_runs` | `tr_recent_runs` |
+| `testrelic_search_failures` | `tr_search_failures` |
+| `testrelic_suggest_fix` | `tr_suggest_fix` |
 
 <!-- TOOLS-END -->
 

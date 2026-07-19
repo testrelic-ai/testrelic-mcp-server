@@ -6,11 +6,12 @@ import type { ToolDefinition } from "../../registry/index.js";
  * MCP clients. The platform owns the LLM key, the agent loop, and the prompt
  * templates. This file is a thin schema layer over `/api/v1/mcp/ai/*`.
  *
- * Two strategies for the long tail of platform tools:
- *  - Granular: one `tr_*` tool per high-value artifact generator (8 below).
- *  - Universal: `tr_ai_execute` for any platform tool by name (40+ on the
- *    platform). Keeps the MCP tool-schema prelude small while still allowing
- *    the agent to call any tool when needed.
+ * One strategy for the long tail of platform tools: `tr_ai_execute` invokes any
+ * platform tool by name (40+ on the platform). Until 3.3.0 there was also a
+ * "granular" set of five `tr_generate_*` wrappers, but they resolved to the same
+ * `executeAiTool` call with a hardcoded name and an opaque input schema, so they
+ * cost five prelude slots for no added type safety. Keeping the prelude small is
+ * the whole point of this layer.
  */
 
 const ArtifactSummary = z.object({
@@ -33,45 +34,6 @@ const Message = z.object({
   content: z.string(),
   artifacts: z.array(z.record(z.unknown())).optional(),
 });
-
-function artifactGenerator(
-  name: string,
-  platformTool: string,
-  artifactType: string,
-  title: string,
-  description: string,
-): ToolDefinition {
-  return {
-    name,
-    capability: "ai",
-    title,
-    description,
-    inputSchema: {
-      input: z.record(z.unknown()).describe(
-        "Tool-specific input. Refer to the platform's input_schema via `tr_ai_list_tools` for the exact shape.",
-      ),
-    },
-    outputSchema: {
-      artifact: ArtifactSummary,
-      result: z.record(z.unknown()),
-    },
-    handler: async (input, ctx) => {
-      const args = (input.input ?? {}) as Record<string, unknown>;
-      const r = await ctx.clients.cloud.executeAiTool(platformTool, args);
-      const artifact = r.artifact ?? { type: artifactType, payload: r.result };
-      const summary = artifact.id ? ` (id: ${artifact.id})` : "";
-      const text = [
-        `## ${title}${summary}`,
-        "",
-        `Artifact type: \`${artifact.type}\``,
-        artifact.id ? `Resource: \`testrelic://artifacts/${artifact.id}\`` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-      return { text, structured: { artifact, result: r.result } };
-    },
-  };
-}
 
 export const aiTools: ToolDefinition[] = [
   {
@@ -118,9 +80,9 @@ export const aiTools: ToolDefinition[] = [
     capability: "ai",
     title: "Execute an Ask-AI tool",
     description:
-      "Invokes any AI tool by name. Body: { tool_name, input }. Returns { result, artifact? }. When the tool produces an artifact (dashboard, report, test_plan, presentation, navigation_paths, session_workspace), the artifact is also addressable as `testrelic://artifacts/{id}` after the call.",
+      "Invokes any AI tool by name. Body: { tool_name, input }. Returns { result, artifact? }. When the tool produces an artifact (dashboard, report, test_plan, presentation, navigation_paths, session_workspace), the artifact is also addressable as `testrelic://artifacts/{id}` after the call. This is also how you generate artifacts: pass tool_name `generate_dashboard`, `generate_report`, `generate_test_plan`, `generate_presentation`, or `generate_navigation_paths` (these replaced the removed `tr_generate_*` tools).",
     inputSchema: {
-      tool_name: z.string().describe("Tool name from `tr_ai_list_tools` (e.g. query_test_runs, query_jira_issues)"),
+      tool_name: z.string().describe("Tool name from `tr_ai_list_tools` (e.g. query_test_runs, query_jira_issues, generate_report)"),
       input: z.record(z.unknown()).describe("Tool-specific input"),
     },
     outputSchema: {
@@ -273,40 +235,17 @@ export const aiTools: ToolDefinition[] = [
       return { text, structured: r };
     },
   },
-  // ── Granular artifact generators ─────────────────────────────────────
-  artifactGenerator(
-    "tr_generate_dashboard",
-    "generate_dashboard",
-    "dashboard",
-    "Generate a dashboard",
-    "Asks the platform to produce a dashboard artifact (widget array). Input shape mirrors the platform's `generate_dashboard` tool — see `tr_ai_list_tools` for the exact schema.",
-  ),
-  artifactGenerator(
-    "tr_generate_report",
-    "generate_report",
-    "report",
-    "Generate a report",
-    "Produces a markdown report artifact with structured sections. Input matches the platform's `generate_report` tool.",
-  ),
-  artifactGenerator(
-    "tr_generate_test_plan",
-    "generate_test_plan",
-    "test_plan",
-    "Generate a test plan",
-    "Produces a test_plan artifact suitable for export to PDF. Input matches the platform's `generate_test_plan` tool.",
-  ),
-  artifactGenerator(
-    "tr_generate_presentation",
-    "generate_presentation",
-    "presentation",
-    "Generate a presentation",
-    "Produces a slide-deck presentation artifact. Input matches the platform's `generate_presentation` tool.",
-  ),
-  artifactGenerator(
-    "tr_generate_navigation_paths",
-    "generate_navigation_paths",
-    "navigation_paths",
-    "Generate a navigation paths diagram",
-    "Produces a navigation_paths artifact (journey graph). Input matches the platform's `generate_navigation_paths` tool.",
-  ),
+  // The five `tr_generate_*` artifact generators were removed in 3.3.0. Each
+  // was a `artifactGenerator()` wrapper whose handler called
+  // `cloud.executeAiTool(<literal>, args)` — exactly what `tr_ai_execute` does
+  // with a runtime `tool_name`. Their inputSchema was an opaque
+  // `z.record(z.unknown())` whose own description told the caller to read
+  // `tr_ai_list_tools` for the real shape, so they carried no schema value over
+  // the generic tool while costing five slots in every client's prelude.
+  //
+  // Migration: tr_generate_dashboard        -> tr_ai_execute { tool_name: "generate_dashboard" }
+  //            tr_generate_report           -> tr_ai_execute { tool_name: "generate_report" }
+  //            tr_generate_test_plan        -> tr_ai_execute { tool_name: "generate_test_plan" }
+  //            tr_generate_presentation     -> tr_ai_execute { tool_name: "generate_presentation" }
+  //            tr_generate_navigation_paths -> tr_ai_execute { tool_name: "generate_navigation_paths" }
 ];
