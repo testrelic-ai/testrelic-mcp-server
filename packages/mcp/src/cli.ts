@@ -11,28 +11,22 @@ import { loadConfigFile, tokenFilePath } from "./config.js";
 import { getLogger } from "./logger.js";
 import { version } from "./version.js";
 import { CapabilitySchema } from "./config.js";
-import type { Capability, Config, LogLevel } from "./config.js";
+import type { Config, LogLevel } from "./config.js";
 
-const VALID_CAPS: readonly Capability[] = CapabilitySchema.options;
+const VALID_CAPS: readonly string[] = CapabilitySchema.options;
 
-function parseCapsList(raw: string): Capability[] {
-  const out: Capability[] = [];
-  const unknown: string[] = [];
-  for (const part of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
-    if ((VALID_CAPS as readonly string[]).includes(part)) {
-      out.push(part as Capability);
-    } else {
-      unknown.push(part);
-    }
-  }
-  if (unknown.length) {
-    console.error(
-      `Unknown capability flag(s): ${unknown.join(", ")}\n` +
-        `Valid: ${VALID_CAPS.join(", ")}`,
-    );
-    process.exit(2);
-  }
-  return out;
+/**
+ * Split a `--caps` value into raw capability strings. Deliberately does NOT
+ * validate or exit: unknown/retired names are dropped-with-a-warning downstream
+ * by `normalizeCapabilities` in resolveConfig — the same path the
+ * TESTRELIC_MCP_CAPS env var takes. A previous version hard-exited here on any
+ * non-member (including the retired `config`/`sessions` that `--help` still
+ * advertised), which re-introduced the exact zero-tools outage the capability
+ * skew-tolerance was built to prevent, and made the flag and env inconsistent
+ * for an identical list.
+ */
+function parseCapsList(raw: string): string[] {
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 /**
@@ -111,7 +105,8 @@ async function main(): Promise<void> {
       type: "string",
       describe:
         "Comma-separated capabilities to enable (core is always on). " +
-        "Valid: core, coverage, creation, healing, impact, triage, signals, devtools, config, ai, marketplace, apps, artifacts, sessions. " +
+        `Valid: ${VALID_CAPS.join(", ")}. ` +
+        "Unknown/retired names are ignored with a warning, not fatal. " +
         "Example: --caps=triage,signals,ai",
     })
     .option("config", {
@@ -124,8 +119,12 @@ async function main(): Promise<void> {
     })
     .option("host", {
       type: "string",
-      default: "127.0.0.1",
-      describe: "HTTP bind host.",
+      // No yargs default: a default here is indistinguishable from an explicit
+      // value, so `--port` alone would inject host="127.0.0.1" into the CLI
+      // config layer and (CLI > env precedence) silently override
+      // TESTRELIC_MCP_HOST. The effective default lives in resolveConfig
+      // (host ?? "127.0.0.1"), which env/file layers can still set.
+      describe: "HTTP bind host (default 127.0.0.1).",
     })
     .option("output-dir", {
       type: "string",
@@ -214,7 +213,10 @@ async function main(): Promise<void> {
     ...(argv.port || argv.publicHosts
       ? {
           server: {
-            ...(argv.port ? { port: argv.port as number, host: argv.host as string } : {}),
+            ...(argv.port ? { port: argv.port as number } : {}),
+            // Only carry host when explicitly passed, so it doesn't clobber
+            // an env/file-configured bind host (see the --host option note).
+            ...(argv.host ? { host: argv.host as string } : {}),
             ...(argv.publicHosts
               ? {
                   publicHosts: String(argv.publicHosts)

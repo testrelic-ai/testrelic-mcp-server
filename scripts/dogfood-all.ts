@@ -18,7 +18,7 @@ import { once } from "node:events";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer, type TestRelicServer } from "../packages/mcp/src/index.js";
 import { ALL_TOOLS } from "../packages/mcp/src/tools/index.js";
@@ -111,7 +111,7 @@ async function startMock(): Promise<{ child: ChildProcess; url: string }> {
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
     child.once("exit", (code) => reject(new Error(`mock exited early (${code})`)));
-    setTimeout(() => reject(new Error("mock did not start in 15s")), 15_000).unref();
+    setTimeout(() => reject(new Error("mock did not start in 45s")), 45_000).unref();
   });
   return { child, url };
 }
@@ -202,14 +202,16 @@ async function main(): Promise<number> {
       ...(planKey ? { plan_cache_key: planKey } : { plan: "1. open page\n2. assert title" }),
     });
 
-    const specDir = mkdtempSync(join(tmpdir(), "tr-dogfood-spec-"));
-    const specPath = join(specDir, "dogfood.spec.ts");
+    // tr_dry_run_test contains the path to outputDir (TEAI-271), so the spec
+    // MUST live under it — write there, not in a separate tmp dir.
+    const specPath = join(srv.__ctx.config.outputDir, "dogfood.spec.ts");
+    mkdirSync(srv.__ctx.config.outputDir, { recursive: true });
     writeFileSync(
       specPath,
       "import { test, expect } from '@playwright/test';\n" +
         "test('dogfood', async () => { expect(1).toBe(1); });\n",
     );
-    await callTool(srv, "tr_dry_run_test", { file_path: specPath });
+    await callTool(srv, "tr_dry_run_test", { file_path: "dogfood.spec.ts" });
     await callTool(srv, "tr_generate_assertion", { step: "user sees the order confirmation page" });
 
     // ── healing ─────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { type ChildProcess } from "node:child_process";
 import { startInProcessServer, startMockServer, stopMockServer } from "../fixtures/server.js";
 import { ALL_TOOLS } from "../../packages/mcp/src/tools/index.js";
+import { toFraction } from "../../packages/mcp/src/clients/cloud.js";
 
 let mock: ChildProcess | undefined;
 
@@ -202,6 +203,23 @@ describe("contract: tool registry", () => {
 });
 
 describe("contract: triage capability", () => {
+  /**
+   * toFraction converts the platform's 0–100 flakiness score to a 0–1 fraction.
+   * The boundary value 1 (1% flaky) is the one that bit: a `>1 ? /100 : n`
+   * heuristic left it at 1.0 (100%), reporting the mildest flaky test as the
+   * worst. Assert the full boundary set.
+   */
+  it("toFraction: score 1 → 0.01 (not 100%), plus range/clamp boundaries", () => {
+    expect(toFraction(0)).toBe(0);
+    expect(toFraction(1)).toBeCloseTo(0.01, 10); // the regressed boundary
+    expect(toFraction(50)).toBeCloseTo(0.5, 10);
+    expect(toFraction(82)).toBeCloseTo(0.82, 10);
+    expect(toFraction(100)).toBe(1);
+    expect(toFraction(150)).toBe(1); // clamp high
+    expect(toFraction(-5)).toBe(0); // clamp low
+    expect(toFraction(NaN)).toBe(0); // non-finite
+  });
+
   /**
    * The platform's /mcp/flakiness returns `score` as a 0–100 percentage; the
    * internal FlakyTest contract is a 0–1 fraction. Before normalization a real

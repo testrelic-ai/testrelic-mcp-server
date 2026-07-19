@@ -70,17 +70,21 @@ export interface FlakinessResponse {
 
 /**
  * The platform's `/mcp/flakiness` returns `score` as a 0–100 integer
- * percentage, while every internal consumer (`FlakyTest.flakiness_score`,
- * threshold inputs, the score-bar rendering) works in 0–1 fractions. Normalize
- * at this boundary — tolerantly, so a backend that later switches to fractions
- * doesn't double-divide. Found by dogfooding: a score of 82 reached
- * `"░".repeat(10 - 820)` and threw `Invalid count value: -810`, killing the
- * whole tr_flaky_audit call.
+ * percentage (see FlakinessRow), while every internal consumer
+ * (`FlakyTest.flakiness_score`, threshold inputs, the score-bar rendering)
+ * works in 0–1 fractions. Divide by 100 to convert.
+ *
+ * NOT a `>1 ? /100 : n` heuristic: that was ambiguous at the boundary — a real
+ * score of 1 (i.e. 1% flaky) fell into the `else` branch and rendered as 1.0
+ * (100%), reporting the mildest non-zero-flaky test as maximally flaky. The
+ * source contract is unambiguously 0–100, so a straight divide is correct for
+ * every value; the clamp guards a malformed out-of-range score. (Original
+ * symptom that motivated this normalization: a score of 82 reached
+ * `"░".repeat(10 - 820)` and threw `Invalid count value: -810`.)
  */
-function toFraction(score: number): number {
+export function toFraction(score: number): number {
   const n = Number.isFinite(score) ? score : 0;
-  const f = n > 1 ? n / 100 : n;
-  return Math.min(1, Math.max(0, f));
+  return Math.min(1, Math.max(0, n / 100));
 }
 
 // ── Platform response shapes we parse into legacy types ─────────────────────
@@ -808,7 +812,10 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
             pass_rate: d.passRate,
             total_runs: d.totalRuns ?? 0,
             avg_duration_ms: d.durationMs,
-            flaky_count: Math.round(d.flakiness),
+            // `flakiness` is a 0–100 score, not a count — carry it as a
+            // percentage (matches pass_rate's convention), do not relabel it
+            // as a test count.
+            flakiness_pct: d.flakiness,
           })),
         };
       } catch {

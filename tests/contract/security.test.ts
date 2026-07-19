@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { startInProcessServer } from "../fixtures/server.js";
 import { ALL_TOOLS } from "../../packages/mcp/src/tools/index.js";
 import { buildAllowList, isLoopbackHost } from "../../packages/mcp/src/transport/http.js";
+import { resolveWithinDir } from "../../packages/mcp/src/util/paths.js";
 
 const PLAN = {
   goal: "Login flow",
@@ -58,6 +59,48 @@ describe("security: creation path containment (TEAI-271)", () => {
       await expect(tool.handler({ file_path: abs }, srv.__ctx)).rejects.toMatchObject({
         code: "INVALID_INPUT",
       });
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
+/**
+ * Shared path-containment gate. Every tool that turns caller text into a
+ * filesystem path routes through this; a regression here is an arbitrary
+ * read/write primitive on the hosted transport.
+ */
+describe("security: resolveWithinDir containment", () => {
+  const base = resolve("/tmp/tr-base");
+  it("allows a plain filename and a nested subpath", () => {
+    expect(resolveWithinDir(base, "artifact.json")).toBe(resolve(base, "artifact.json"));
+    expect(resolveWithinDir(base, "sub/dir/a.json")).toBe(resolve(base, "sub/dir/a.json"));
+  });
+  it("rejects ../ traversal, absolute paths, and the base itself", () => {
+    for (const bad of ["../../../../etc/passwd", "../escape.json", "/etc/cron.d/x", "."]) {
+      expect(() => resolveWithinDir(base, bad)).toThrowError(/escapes the allowed directory/);
+    }
+  });
+});
+
+/**
+ * tr_artifacts_save_to_file must contain the caller-supplied `filename`. A bare
+ * join() let `../../etc/x` escape outputDir — arbitrary file write as the
+ * server-process user, reachable remotely on the hosted HTTP transport.
+ */
+describe("security: tr_artifacts_save_to_file path containment", () => {
+  it("rejects a traversal filename before any fetch or write", async () => {
+    // No mock server needed: containment is validated up front, so a hostile
+    // filename throws before getArtifact is ever called (the positive
+    // happy-path write is covered by the dogfood + live-stage runs).
+    const srv = await startInProcessServer({ capabilities: ["artifacts"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_artifacts_save_to_file")!;
+      for (const bad of ["../../../../evil.json", "/etc/cron.d/x", "..\\..\\win.txt"]) {
+        await expect(
+          tool.handler({ id: "art-mock-1", filename: bad }, srv.__ctx),
+        ).rejects.toThrow(/escapes the allowed directory|PATH_TRAVERSAL/);
+      }
     } finally {
       await srv.stop();
     }

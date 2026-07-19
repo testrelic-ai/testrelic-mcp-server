@@ -21,9 +21,9 @@ export const devtoolsTools: ToolDefinition[] = [
         input.days as number | undefined,
       );
       const recent = trends.data.slice(-(input.days as number | undefined ?? 7));
-      const lines = [`## Trends — ${trends.project_id} (${recent.length}d)`, "", "| Date | Pass rate | Runs | Avg duration (s) | Flaky |", "|---|---|---|---|---|"];
+      const lines = [`## Trends — ${trends.project_id} (${recent.length}d)`, "", "| Date | Pass rate | Runs | Avg duration (s) | Flaky % |", "|---|---|---|---|---|"];
       for (const p of recent) {
-        lines.push(`| ${p.date} | ${p.pass_rate.toFixed(1)}% | ${p.total_runs} | ${(p.avg_duration_ms / 1000).toFixed(1)} | ${p.flaky_count} |`);
+        lines.push(`| ${p.date} | ${p.pass_rate.toFixed(1)}% | ${p.total_runs} | ${(p.avg_duration_ms / 1000).toFixed(1)} | ${p.flakiness_pct.toFixed(1)}% |`);
       }
       return { text: lines.join("\n"), structured: { trends: { ...trends, data: recent } } };
     },
