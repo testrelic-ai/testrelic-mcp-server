@@ -36,6 +36,24 @@ jobs:
             exit 1
           fi
 
+      # The agent skill's tool inventory is generated from ALL_TOOLS. Without
+      # this gate it drifts silently: the hand-maintained version reached 39 of
+      # 72 tools, omitting the entire ai/marketplace/apps/artifacts/memory
+      # surfaces, and nothing failed.
+      - run: npm --workspace @testrelic/mcp run update-skill
+      - name: Verify agent skill is in sync
+        run: |
+          if [[ -n "$(git status --porcelain .agents/skills)" ]]; then
+            echo "::error::.agents/skills is out of date. Run 'npm run roll'."
+            git diff .agents/skills
+            exit 1
+          fi
+
+      # Claude Code reads .claude/skills only, so it gets a generated mirror.
+      # A hand-edited mirror silently diverges from the source of truth.
+      - name: Verify skill mirrors are current
+        run: npm --workspace @testrelic/mcp run check-skills
+
   docker:
     runs-on: ubuntu-latest
     needs: test

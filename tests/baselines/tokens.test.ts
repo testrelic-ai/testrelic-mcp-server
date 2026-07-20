@@ -19,7 +19,7 @@ const ALL_CAPS: Capability[] = [
   "marketplace",
   "apps",
   "artifacts",
-  "sessions",
+  "memory",
 ];
 
 /**
@@ -142,10 +142,18 @@ describe("token baselines", () => {
     }
   });
 
-  it("tr_generate_dashboard artifact result stays under 1800 tokens", async () => {
+  // Was `tr_generate_dashboard` until 3.3.0. That tool was one of five
+  // artifact-generator wrappers that all resolved to the same
+  // cloud.executeAiTool call as tr_ai_execute, so they were removed. Same
+  // scenario, same ceiling — exercised through the surviving path.
+  it("dashboard artifact via tr_ai_execute stays under 1800 tokens", async () => {
     const srv = await startInProcessServer({ capabilities: ALL_CAPS });
     try {
-      const result = await runTool("tr_generate_dashboard", { input: { title: "Mock dashboard" } }, srv);
+      const result = await runTool(
+        "tr_ai_execute",
+        { tool_name: "generate_dashboard", input: { title: "Mock dashboard" } },
+        srv,
+      );
       const tokens = countObjectTokens(result.text) + countObjectTokens(result.structured ?? {});
       expect(tokens).toBeLessThan(1_800);
     } finally {

@@ -17,9 +17,13 @@ import { TestRelicMcpError } from "../errors.js";
  *
  * Every tool declares its capability. `registerTools` filters by the
  * enabled capability set (with "core" always on) — this is the primary
- * token-reduction lever. A client with `--caps=creation` sees ~6 tools
- * instead of the full ~35, meaning the tool-schema prelude sent with
- * every request shrinks dramatically.
+ * token-reduction lever. A client with `--caps=creation` sees ~11 tools
+ * (core + creation) instead of the full 66, meaning the tool-schema prelude
+ * sent with every request shrinks dramatically.
+ *
+ * Keep that ratio honest: the contract test caps the total registered surface.
+ * This comment claimed "~35" while the real total had reached 86, which is how
+ * the gating stopped delivering what it promised.
  */
 
 export interface ToolContext {
@@ -140,7 +144,12 @@ export class ToolRegistry {
       deprecated: def.deprecated ?? false,
     });
 
-    for (const alias of def.aliases ?? []) {
+    // Deprecated v1 aliases are opt-in since 3.3.0 (--legacy-aliases /
+    // TESTRELIC_MCP_LEGACY_ALIASES=1). Each one duplicates a tool the client
+    // already sees, so registering them by default inflated every request's
+    // tool-schema prelude by 14 names for no new capability.
+    const aliases = ctx.config.legacyAliases ? (def.aliases ?? []) : [];
+    for (const alias of aliases) {
       ctx.server.registerTool(
         alias.name,
         {

@@ -199,7 +199,3 @@ function fallbackHeal(source: string, errorType: string): string {
   }
   return healed;
 }
-
-export function registerHealingTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of healingTools) register(t);
-}

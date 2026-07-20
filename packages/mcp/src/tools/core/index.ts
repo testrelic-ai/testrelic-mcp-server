@@ -119,6 +119,10 @@ export const coreTools: ToolDefinition[] = [
       cursor: z.string().optional(),
       limit: z.number().int().min(1).max(20).optional().default(5),
     },
+    // Inherited from the removed `tr_list_runs` (3.3.0), which was an identical
+    // duplicate of this tool. Kept here so v1 callers of the flat name still
+    // resolve when legacy aliases are enabled.
+    aliases: [{ name: "testrelic_list_runs", description: "List recent runs." }],
     handler: async (input, ctx) => {
       const result = await ctx.clients.testrelic.listRuns(input);
       const { data: runs, next_cursor, total } = result;
