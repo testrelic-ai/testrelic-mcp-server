@@ -105,8 +105,15 @@ jobs:
             --task-definition "${{ env.ECS_TASK_FAMILY }}" \
             --query 'taskDefinition' > /tmp/task-def.json
 
-          jq --arg IMAGE "$IMAGE" \
-            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = $IMAGE' \
+          # Inject TESTRELIC_MCP_PUBLIC_HOSTS so the server's DNS-rebinding
+          # allow-list accepts the CloudFront/nginx-forwarded public Host.
+          # Without it the hosted endpoint 403s every POST /mcp (the 3.3.x
+          # hardening). Idempotent: drop any prior value, then add the current
+          # public host + its new.* preview alias.
+          jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+             | .containerDefinitions[0].image = $IMAGE
+             | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])' \
             /tmp/task-def.json > /tmp/task-def-updated.json
 
       - name: Register new task definition revision
