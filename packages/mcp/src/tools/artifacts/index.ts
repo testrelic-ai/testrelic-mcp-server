@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve } from "node:path";
 import type { ToolDefinition } from "../../registry/index.js";
+import { resolveWithinDir } from "../../util/paths.js";
 
 /**
  * Artifacts capability — list, fetch, export, and save artifacts produced by
@@ -115,11 +116,15 @@ export const artifactsTools: ToolDefinition[] = [
     outputSchema: { path: z.string(), bytes: z.number() },
     handler: async (input, ctx) => {
       const id = String(input.id);
-      const r = await ctx.clients.cloud.getArtifact(id);
       const dir = resolve(ctx.config.outputDir);
-      mkdirSync(dir, { recursive: true });
       const filename = (input.filename as string | undefined) ?? `artifact-${id}.json`;
-      const path = join(dir, filename);
+      // Contain caller-supplied filename BEFORE any work: a bare join() let
+      // `../../etc/x` (or an absolute path) escape outputDir and write anywhere
+      // — an arbitrary-write primitive on the hosted transport. Validate first
+      // so a hostile filename is rejected without even fetching the artifact.
+      const path = resolveWithinDir(dir, filename);
+      const r = await ctx.clients.cloud.getArtifact(id);
+      mkdirSync(dir, { recursive: true });
       const json = JSON.stringify(r, null, 2);
       writeFileSync(path, json, "utf-8");
       return { text: `Wrote ${json.length} bytes to ${path}.`, structured: { path, bytes: json.length } };

@@ -1,37 +1,15 @@
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
 import { TEMPLATES } from "./templates.js";
 import type { TestPlan } from "../../types/index.js";
 import { InvalidInputError, NotFoundError } from "../../errors.js";
+import { resolveWithinDir } from "../../util/paths.js";
 
 const execFileAsync = promisify(execFile);
-
-/**
- * Resolve `candidate` against `baseDir` and guarantee the result stays inside
- * `baseDir`. This blocks path traversal (`../`), absolute paths that point
- * outside the sandbox, and (on Windows) cross-drive references. Anything that
- * escapes — or resolves to the directory itself — is rejected.
- *
- * Security: the creation tools shell out to `tsc` on the resolved path, so an
- * unconstrained path would let a caller type-check (and previously import) an
- * arbitrary file anywhere on disk. Containment is the gate.
- */
-function resolveWithinDir(baseDir: string, candidate: string): string {
-  const base = resolve(baseDir);
-  const resolved = resolve(base, candidate);
-  const rel = relative(base, resolved);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-    throw new InvalidInputError(
-      `Path "${candidate}" escapes the allowed output directory (${base}). Test files must live under it.`,
-      "PATH_TRAVERSAL",
-    );
-  }
-  return resolved;
-}
 
 /**
  * Creation capability — Planner, Generator, DryRun, AssertionHelper,

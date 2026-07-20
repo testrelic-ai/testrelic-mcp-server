@@ -83,7 +83,10 @@ async function waitForOutput(child: ChildProcess, pattern: RegExp): Promise<void
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
     child.once("exit", (code) => reject(new Error(`mock server exited early (code=${code}): ${chunks.join("")}`)));
-    setTimeout(() => reject(new Error("mock server failed to start within 15s")), 15_000).unref();
+    // 45s, not 15s: a cold `npx tsx` spawn under an on-access AV scanner can
+    // take ~30s to first-listen on a dev box. Fast CI never approaches this
+    // ceiling, so raising it only removes local-dev false failures.
+    setTimeout(() => reject(new Error("mock server failed to start within 45s")), 45_000).unref();
   });
 }
 

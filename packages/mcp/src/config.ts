@@ -95,6 +95,14 @@ export const ServerConfigSchema = z
     port: z.number().int().min(1).max(65535).optional(),
     host: z.string().optional(),
     transport: TransportSchema.optional(),
+    /**
+     * Public hostnames a fronting proxy/CDN forwards in the Host header
+     * (e.g. mcp-stage.testrelic.ai). The DNS-rebinding allow-list knows only
+     * the bind address by default, so a hosted deployment MUST list its
+     * public names here or every proxied request is rejected with 403
+     * "Invalid Host header". Env: TESTRELIC_MCP_PUBLIC_HOSTS (comma-separated).
+     */
+    publicHosts: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -153,7 +161,7 @@ export type CloudConfig = z.infer<typeof CloudConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 export interface ResolvedConfig {
-  server: Required<ServerConfig> & { port: number };
+  server: Required<Omit<ServerConfig, "publicHosts">> & { port: number; publicHosts: string[] };
   capabilities: Capability[];
   timeouts: Required<TimeoutConfig>;
   outputDir: string;
@@ -265,6 +273,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
       port: port ?? 0,
       host: parsed.server?.host ?? "127.0.0.1",
       transport,
+      publicHosts: parsed.server?.publicHosts ?? [],
     },
     // stderr, never stdout — stdout carries the MCP handshake. Not the pino
     // logger: it is configured from this very function, so importing it here
@@ -310,6 +319,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   }
   if (env.TESTRELIC_MCP_PORT) c.server = { port: Number(env.TESTRELIC_MCP_PORT) };
   if (env.TESTRELIC_MCP_HOST) c.server = { ...c.server, host: env.TESTRELIC_MCP_HOST };
+  if (env.TESTRELIC_MCP_PUBLIC_HOSTS) {
+    c.server = {
+      ...c.server,
+      publicHosts: env.TESTRELIC_MCP_PUBLIC_HOSTS.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    };
+  }
   if (env.TESTRELIC_MCP_OUTPUT_DIR) c.outputDir = env.TESTRELIC_MCP_OUTPUT_DIR;
   if (env.TESTRELIC_MCP_CACHE_DIR) c.cacheDir = env.TESTRELIC_MCP_CACHE_DIR;
   if (env.TESTRELIC_MCP_ISOLATED) {

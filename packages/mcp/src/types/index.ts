@@ -141,7 +141,9 @@ export interface TrendPoint {
   pass_rate: number;
   total_runs: number;
   avg_duration_ms: number;
-  flaky_count: number;
+  /** Flakiness as a 0–100 PERCENTAGE (the platform trend bucket returns a
+   *  0–100 score, not a test count). Render as `${flakiness_pct}%`. */
+  flakiness_pct: number;
 }
 
 export interface ProjectTrends {
