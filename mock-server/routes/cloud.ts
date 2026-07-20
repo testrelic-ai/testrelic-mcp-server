@@ -730,6 +730,16 @@ router.get("/mcp/apps", (_req: Request, res: Response) => {
   res.json({ apps: MOCK_APPS });
 });
 
+// Static route MUST precede the `/:slug` param route below, or Express matches
+// `:slug="connections"` first and returns 404 — shadowing this handler.
+router.get("/mcp/apps/connections", (_req: Request, res: Response) => {
+  res.json({
+    connections: MOCK_APPS
+      .filter((a) => a.connected)
+      .map((a) => ({ id: a.connectionId!, app: a.slug, status: "ACTIVE" })),
+  });
+});
+
 router.get("/mcp/apps/:slug", (req: Request, res: Response) => {
   const app = MOCK_APPS.find((a) => a.slug === req.params.slug);
   if (!app) return res.status(404).json({ error: { code: "APP_NOT_FOUND" } });
@@ -739,14 +749,6 @@ router.get("/mcp/apps/:slug", (req: Request, res: Response) => {
 router.get("/mcp/apps/:slug/actions", (req: Request, res: Response) => {
   const actions = MOCK_APP_ACTIONS[req.params.slug] ?? [];
   res.json({ actions });
-});
-
-router.get("/mcp/apps/connections", (_req: Request, res: Response) => {
-  res.json({
-    connections: MOCK_APPS
-      .filter((a) => a.connected)
-      .map((a) => ({ id: a.connectionId!, app: a.slug, status: "ACTIVE" })),
-  });
 });
 
 router.post("/mcp/apps/:slug/connect", (req: Request, res: Response) => {

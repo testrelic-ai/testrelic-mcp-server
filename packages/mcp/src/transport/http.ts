@@ -18,12 +18,92 @@ import { version } from "../version.js";
  * per session via the `buildServer` factory. Subsequent requests on
  * the same session are routed to the already-connected transport.
  */
+
+/** Format a host + port into a canonical HTTP `Host` header value. */
+function toHostHeader(host: string, port: number): string {
+  // IPv6 literals must be bracketed in a Host header (`[::1]:3000`).
+  const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `${bracketed}:${port}`;
+}
+
+/** True for loopback hosts (127.0.0.0/8, ::1, localhost). */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    h === "localhost" ||
+    h === "::1" ||
+    h === "0:0:0:0:0:0:0:1" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+  );
+}
+
+/**
+ * Build the DNS-rebinding allow-list: the loopback names plus the explicitly
+ * configured host, on our port. A browser page that rebinds a DNS name to
+ * 127.0.0.1 sends its *own* hostname in the Host header, which will not match
+ * any entry here and is rejected by the transport.
+ *
+ * `publicHosts` extends the list with the hostnames a fronting proxy/CDN
+ * forwards in the Host header. Without this, a hosted deployment (CloudFront →
+ * nginx `proxy_set_header Host $host` → this server) rejects EVERY real client
+ * with 403 "Invalid Host header" — which is exactly what happened to
+ * mcp-stage.testrelic.ai when this hardening first shipped: the allow-list
+ * only knew the bind address, so the protection took the whole hosted
+ * endpoint down rather than protecting it. Public entries are added both bare
+ * (proxies at :443/:80 forward `Host: name` with no port) and with our port.
+ */
+export function buildAllowList(
+  host: string,
+  port: number,
+  publicHosts: readonly string[] = [],
+): { allowedHosts: string[]; allowedOrigins: string[] } {
+  const hosts = new Set<string>([
+    toHostHeader("127.0.0.1", port),
+    toHostHeader("localhost", port),
+    toHostHeader("::1", port),
+    toHostHeader(host, port),
+  ]);
+  // Standard ports may arrive without an explicit `:port` in the Host header.
+  if (port === 80 || port === 443) {
+    for (const h of [...hosts]) hosts.add(h.replace(/:\d+$/, ""));
+  }
+  for (const raw of publicHosts) {
+    const h = raw.trim().toLowerCase();
+    if (!h) continue;
+    hosts.add(h);
+    hosts.add(toHostHeader(h, port));
+  }
+  const origins = new Set<string>();
+  for (const h of hosts) {
+    origins.add(`http://${h}`);
+    origins.add(`https://${h}`);
+  }
+  return { allowedHosts: [...hosts], allowedOrigins: [...origins] };
+}
+
 export async function startHttp(
   buildServer: () => McpServer,
   config: ResolvedConfig,
 ): Promise<() => Promise<void>> {
   const app = express();
   app.use(express.json({ limit: "4mb" }));
+
+  const port = config.server.port || 3000;
+  const host = config.server.host || "127.0.0.1";
+
+  // DNS-rebinding protection. Every session transport enforces this allow-list
+  // of Host/Origin values so a malicious web page cannot drive this server via
+  // the user's browser.
+  const { allowedHosts, allowedOrigins } = buildAllowList(host, port, config.server.publicHosts);
+  getLogger().info({ allowedHosts }, "http transport Host allow-list");
+
+  if (!isLoopbackHost(host)) {
+    getLogger().warn(
+      { host, port },
+      "http transport is bound to a non-loopback host — the MCP server is reachable off this machine. " +
+        "Bind to 127.0.0.1 unless it sits behind an authenticating proxy you trust.",
+    );
+  }
 
   app.get("/healthz", (_req: Request, res: Response) => {
     res.json({ ok: true, version, transport: "http", capabilities: config.capabilities });
@@ -41,6 +121,9 @@ export async function startHttp(
       const sessionServer = buildServer();
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => newSessionId,
+        enableDnsRebindingProtection: true,
+        allowedHosts,
+        allowedOrigins,
         onsessioninitialized: (id: string) => {
           transports.set(id, transport!);
           servers.set(id, sessionServer);
@@ -88,8 +171,6 @@ export async function startHttp(
     res.json({ ok: true });
   });
 
-  const port = config.server.port || 3000;
-  const host = config.server.host || "127.0.0.1";
   return new Promise((resolve) => {
     const httpServer = app.listen(port, host, () => {
       getLogger().info({ host, port, version, capabilities: config.capabilities }, "http transport listening");

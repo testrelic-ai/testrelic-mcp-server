@@ -68,6 +68,25 @@ export interface FlakinessResponse {
   scores: FlakinessRow[];
 }
 
+/**
+ * The platform's `/mcp/flakiness` returns `score` as a 0–100 integer
+ * percentage (see FlakinessRow), while every internal consumer
+ * (`FlakyTest.flakiness_score`, threshold inputs, the score-bar rendering)
+ * works in 0–1 fractions. Divide by 100 to convert.
+ *
+ * NOT a `>1 ? /100 : n` heuristic: that was ambiguous at the boundary — a real
+ * score of 1 (i.e. 1% flaky) fell into the `else` branch and rendered as 1.0
+ * (100%), reporting the mildest non-zero-flaky test as maximally flaky. The
+ * source contract is unambiguously 0–100, so a straight divide is correct for
+ * every value; the clamp guards a malformed out-of-range score. (Original
+ * symptom that motivated this normalization: a score of 82 reached
+ * `"░".repeat(10 - 820)` and threw `Invalid count value: -810`.)
+ */
+export function toFraction(score: number): number {
+  const n = Number.isFinite(score) ? score : 0;
+  return Math.min(1, Math.max(0, n / 100));
+}
+
 // ── Platform response shapes we parse into legacy types ─────────────────────
 
 interface PlatformRepo {
@@ -729,14 +748,16 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       days: number;
     }> {
       const res = await cloud.getFlakiness(p.project_id, p.days ?? 7);
-      const filtered = res.scores.filter((s) => s.score >= (p.threshold ?? 0));
+      // Compare fractions to fractions — the raw platform score is 0–100, the
+      // tool's `threshold` input is documented 0–1.
+      const filtered = res.scores.filter((s) => toFraction(s.score) >= (p.threshold ?? 0));
       return {
         data: filtered.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
           suite: s.suite,
           project_id: s.repoId,
-          flakiness_score: s.score,
+          flakiness_score: toFraction(s.score),
           failure_count: s.flakyRuns,
           pass_count: Math.max(0, s.totalRuns - s.flakyRuns),
           last_seen: s.updatedAt,
@@ -791,7 +812,10 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
             pass_rate: d.passRate,
             total_runs: d.totalRuns ?? 0,
             avg_duration_ms: d.durationMs,
-            flaky_count: Math.round(d.flakiness),
+            // `flakiness` is a 0–100 score, not a count — carry it as a
+            // percentage (matches pass_rate's convention), do not relabel it
+            // as a test count.
+            flakiness_pct: d.flakiness,
           })),
         };
       } catch {
@@ -1057,7 +1081,7 @@ export function legacyClickhouseAdapter(cloud: CloudOps) {
         data: r.scores.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
-          flakiness_score: s.score,
+          flakiness_score: toFraction(s.score),
           p90_duration_ms: 0,
           run_count_7d: s.totalRuns,
           failure_count_7d: s.flakyRuns,

@@ -86,7 +86,11 @@ export const triageTools: ToolDefinition[] = [
       if (!result.data.length) return { text: `No flaky tests above threshold.`, structured: { tests: [], total: 0 } };
       const lines = [`## Flaky Tests (${result.total} above threshold, last ${input.days ?? 7} days)`, ""];
       for (const t of result.data) {
-        const scoreBar = "█".repeat(Math.round(t.flakiness_score * 10)) + "░".repeat(10 - Math.round(t.flakiness_score * 10));
+        // Clamp defensively: the client normalizes scores to 0–1, but a bad
+        // value here must degrade the bar, never throw the whole tool
+        // (`"░".repeat(negative)` is a hard error).
+        const filled = Math.min(10, Math.max(0, Math.round(t.flakiness_score * 10)));
+        const scoreBar = "█".repeat(filled) + "░".repeat(10 - filled);
         lines.push(`- **${t.test_name}**${t.known_flaky ? ` [known: ${t.known_flaky_reason}]` : ""}`);
         lines.push(`  ${(t.flakiness_score * 100).toFixed(0)}% ${scoreBar} | ${t.failure_count}/${t.failure_count + t.pass_count} | ${t.suite} | ${t.test_id}`);
       }
@@ -341,33 +345,10 @@ export const triageTools: ToolDefinition[] = [
       return { text, structured: { ok: true, test_id: result.test_id } };
     },
   },
-  {
-    name: "tr_list_runs",
-    capability: "triage",
-    title: "List recent runs (legacy alias of tr_recent_runs)",
-    description: "Alias retained for v1 compatibility; behaviour identical to tr_recent_runs under the core capability.",
-    inputSchema: {
-      project_id: z.string().optional(),
-      framework: z.enum(RUN_FILTER_FRAMEWORKS).optional(),
-      status: z.enum(["passed", "failed", "running", "cancelled"]).optional(),
-      cursor: z.string().optional(),
-      limit: z.number().int().min(1).max(20).optional().default(5),
-    },
-    aliases: [{ name: "testrelic_list_runs", description: "List recent runs." }],
-    deprecated: true,
-    handler: async (input, ctx) => {
-      const result = await ctx.clients.testrelic.listRuns(input);
-      const { data: runs, next_cursor, total } = result;
-      if (!runs.length) return { text: "No test runs found.", structured: { runs: [] } };
-      const lines = [`## Test Runs (${runs.length} of ${total})`, ""];
-      for (const run of runs) {
-        lines.push(`- **${run.run_id}** [${run.status}] — ${run.failed} failed · ${run.flaky} flaky — ${run.branch}@${run.commit_sha}`);
-      }
-      return { text: lines.join("\n"), structured: { runs, next_cursor, total } };
-    },
-  },
+  // `tr_list_runs` was removed in 3.3.0. It was a self-declared identical
+  // duplicate of `tr_recent_runs` (same inputSchema, same
+  // clients.testrelic.listRuns call) and cost three registered names — itself,
+  // its alias, and the tool it duplicated. `tr_recent_runs` (capability: core)
+  // renders a strict superset: pass-rate and duration in addition to counts.
+  // Callers on the v1 name get it back via TESTRELIC_MCP_LEGACY_ALIASES=1.
 ];
-
-export function registerTriageTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of triageTools) register(t);
-}

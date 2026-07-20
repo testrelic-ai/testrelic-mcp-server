@@ -23,16 +23,64 @@ export const CapabilitySchema = z.enum([
   "triage",
   "signals",
   "devtools",
-  "config",
   // New surfaces that mirror cloud-platform-app's Ask AI + Marketplace +
   // connected-Apps gateway. Default off — gated by --caps / TESTRELIC_MCP_CAPS.
   "ai",
   "marketplace",
   "apps",
   "artifacts",
-  "sessions",
   "memory",
 ]);
+
+/**
+ * Capabilities that once existed and are now retired. They are ACCEPTED and
+ * silently dropped rather than rejected.
+ *
+ * This matters more than it looks. `TESTRELIC_MCP_CAPS` is set by independently
+ * released clients — testrelic-cli pins its own list in `mcp_config.rs` — so the
+ * server and its callers are never upgraded in lockstep. A strict enum turns any
+ * skew into a total outage: Zod throws during config parse and the process exits
+ * **before registering a single tool**, so the agent silently gets zero TestRelic
+ * tools rather than a degraded set. That exact failure already happened once,
+ * when the CLI sent the then-nonexistent `memory`.
+ *
+ * `config` and `sessions` were removed in 3.3.0 (both were documented and
+ * accepted, but no tool ever carried either, so enabling them did nothing). The
+ * shipped CLI still sends both, hence this list. Retire a capability by adding
+ * it here, never by deleting it outright.
+ */
+export const RETIRED_CAPABILITIES = new Set(["config", "sessions"]);
+
+/**
+ * Drop retired and unknown capability names instead of throwing. Unknown names
+ * are a client/server version skew, and a partial tool surface always beats none.
+ */
+export function normalizeCapabilities(
+  input: readonly string[],
+  warn?: (msg: string) => void,
+): Capability[] {
+  const known = new Set(CapabilitySchema.options as readonly string[]);
+  const out: Capability[] = [];
+  const retired: string[] = [];
+  const unknown: string[] = [];
+  for (const raw of input) {
+    const c = raw.trim();
+    if (!c) continue;
+    if (known.has(c)) out.push(c as Capability);
+    else if (RETIRED_CAPABILITIES.has(c)) retired.push(c);
+    else unknown.push(c);
+  }
+  if (retired.length && warn) {
+    warn(`ignoring retired capabilities: ${retired.join(", ")} (no tools carry them)`);
+  }
+  if (unknown.length && warn) {
+    warn(
+      `ignoring unknown capabilities: ${unknown.join(", ")} — ` +
+        `known: ${[...known].join(", ")}`,
+    );
+  }
+  return Array.from(new Set(out));
+}
 
 export const TransportSchema = z.enum(["stdio", "http"]);
 
@@ -47,6 +95,14 @@ export const ServerConfigSchema = z
     port: z.number().int().min(1).max(65535).optional(),
     host: z.string().optional(),
     transport: TransportSchema.optional(),
+    /**
+     * Public hostnames a fronting proxy/CDN forwards in the Host header
+     * (e.g. mcp-stage.testrelic.ai). The DNS-rebinding allow-list knows only
+     * the bind address by default, so a hosted deployment MUST list its
+     * public names here or every proxied request is rejected with 403
+     * "Invalid Host header". Env: TESTRELIC_MCP_PUBLIC_HOSTS (comma-separated).
+     */
+    publicHosts: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -73,7 +129,11 @@ export const CloudConfigSchema = z
 export const ConfigSchema = z
   .object({
     server: ServerConfigSchema.optional(),
-    capabilities: z.array(CapabilitySchema).optional(),
+    // Deliberately `z.string()`, not `CapabilitySchema`. Capability lists arrive
+    // from independently-released clients; a strict enum here made any version
+    // skew fatal at parse time (process exits, zero tools registered). Unknown
+    // and retired names are filtered by `normalizeCapabilities` below instead.
+    capabilities: z.array(z.string()).optional(),
     timeouts: TimeoutConfigSchema.optional(),
     outputDir: z.string().optional(),
     cacheDir: z.string().optional(),
@@ -85,6 +145,13 @@ export const ConfigSchema = z
     mockMode: z.boolean().optional(),
     mockServerUrl: z.string().optional(),
     tokenBudgetPerTool: z.number().int().positive().optional(),
+    /**
+     * Register the deprecated v1 `testrelic_*` alias names alongside their
+     * `tr_*` replacements. Default false since 3.3.0 — the 14 aliases were 16%
+     * of the registered surface and every one of them duplicates a tool the
+     * client already sees. Enable only while migrating a v1 consumer.
+     */
+    legacyAliases: z.boolean().optional(),
   })
   .strict();
 
@@ -94,7 +161,7 @@ export type CloudConfig = z.infer<typeof CloudConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 export interface ResolvedConfig {
-  server: Required<ServerConfig> & { port: number };
+  server: Required<Omit<ServerConfig, "publicHosts">> & { port: number; publicHosts: string[] };
   capabilities: Capability[];
   timeouts: Required<TimeoutConfig>;
   outputDir: string;
@@ -111,6 +178,7 @@ export interface ResolvedConfig {
   mockMode: boolean;
   mockServerUrl: string;
   tokenBudgetPerTool: number;
+  legacyAliases: boolean;
 }
 
 const DEFAULT_CLOUD_URL = "https://platform.testrelic.ai/api/v1";
@@ -178,6 +246,7 @@ export function mergeConfig(...layers: Array<Config | undefined>): Config {
     if (layer.mockMode !== undefined) merged.mockMode = layer.mockMode;
     if (layer.mockServerUrl !== undefined) merged.mockServerUrl = layer.mockServerUrl;
     if (layer.tokenBudgetPerTool !== undefined) merged.tokenBudgetPerTool = layer.tokenBudgetPerTool;
+    if (layer.legacyAliases !== undefined) merged.legacyAliases = layer.legacyAliases;
   }
   return merged;
 }
@@ -204,8 +273,14 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
       port: port ?? 0,
       host: parsed.server?.host ?? "127.0.0.1",
       transport,
+      publicHosts: parsed.server?.publicHosts ?? [],
     },
-    capabilities: Array.from(new Set<Capability>(["core", ...((parsed.capabilities ?? []) as Capability[])])),
+    // stderr, never stdout — stdout carries the MCP handshake. Not the pino
+    // logger: it is configured from this very function, so importing it here
+    // would be circular.
+    capabilities: normalizeCapabilities(["core", ...(parsed.capabilities ?? [])], (msg) =>
+      process.stderr.write(`[testrelic-mcp] ${msg}\n`),
+    ),
     timeouts: {
       action: parsed.timeouts?.action ?? 5_000,
       upstream: parsed.timeouts?.upstream ?? 60_000,
@@ -225,6 +300,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     mockMode,
     mockServerUrl,
     tokenBudgetPerTool: parsed.tokenBudgetPerTool ?? 4_000,
+    legacyAliases: parsed.legacyAliases ?? false,
   };
 }
 
@@ -243,10 +319,22 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   }
   if (env.TESTRELIC_MCP_PORT) c.server = { port: Number(env.TESTRELIC_MCP_PORT) };
   if (env.TESTRELIC_MCP_HOST) c.server = { ...c.server, host: env.TESTRELIC_MCP_HOST };
+  if (env.TESTRELIC_MCP_PUBLIC_HOSTS) {
+    c.server = {
+      ...c.server,
+      publicHosts: env.TESTRELIC_MCP_PUBLIC_HOSTS.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    };
+  }
   if (env.TESTRELIC_MCP_OUTPUT_DIR) c.outputDir = env.TESTRELIC_MCP_OUTPUT_DIR;
   if (env.TESTRELIC_MCP_CACHE_DIR) c.cacheDir = env.TESTRELIC_MCP_CACHE_DIR;
   if (env.TESTRELIC_MCP_ISOLATED) {
     c.isolated = env.TESTRELIC_MCP_ISOLATED === "1" || env.TESTRELIC_MCP_ISOLATED === "true";
+  }
+  if (env.TESTRELIC_MCP_LEGACY_ALIASES) {
+    c.legacyAliases =
+      env.TESTRELIC_MCP_LEGACY_ALIASES === "1" || env.TESTRELIC_MCP_LEGACY_ALIASES === "true";
   }
   if (env.TESTRELIC_MCP_LOG_LEVEL) c.logLevel = env.TESTRELIC_MCP_LOG_LEVEL as LogLevel;
   if (env.MOCK_SERVER_URL) c.mockServerUrl = env.MOCK_SERVER_URL;

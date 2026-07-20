@@ -195,7 +195,7 @@ export function registerPrompts(server: McpServer): void {
                 `Produce an executive report for repo ${repo_id} covering the last ${window} days.`,
                 `1. Call \`tr_recent_runs\` with project_id="${repo_id}" days=${window} to gather run history.`,
                 `2. Call \`tr_coverage_report\` with project_id="${repo_id}" to capture the current coverage posture.`,
-                `3. Call \`tr_generate_report\` with the consolidated inputs from steps 1 and 2 to produce a report artifact. Capture the returned \`artifact_id\`.`,
+                `3. Call \`tr_ai_execute\` with tool_name="generate_report" and input carrying the consolidated data from steps 1 and 2 to produce a report artifact. Capture the returned \`artifact.id\`.`,
                 `4. Call \`tr_artifacts_export\` with the artifact_id and format="pdf" to obtain a downloadable URL.`,
                 `5. Summarise headline metrics (pass rate, user/test coverage, top gaps) and surface the PDF URL to the user.`,
               ].join("\n"),
@@ -225,7 +225,7 @@ export function registerPrompts(server: McpServer): void {
             text: [
               `File a Jira ticket for failing run ${run_id} with a linked session workspace.`,
               `1. Call \`tr_diagnose_run\` with run_id="${run_id}" to collect failure signals and user impact.`,
-              `2. Call \`tr_render_session_workspace\` with run_id="${run_id}" to produce a shareable artifact. Capture its URL or artifact_id.`,
+              `2. Call \`tr_ai_execute\` with tool_name="session_workspace" and input={ run_id: "${run_id}" } to produce a shareable session-workspace artifact. Capture its URL or \`artifact.id\`.`,
               `3. Call \`tr_create_jira\` with a clear summary, the diagnose findings in the description, and the session workspace link appended at the end of the description.`,
               `4. Surface the Jira issue key and URL alongside the session workspace link to the user.`,
             ].join("\n"),

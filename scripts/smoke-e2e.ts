@@ -21,7 +21,7 @@ import { createServer, type TestRelicServer } from "../packages/mcp/src/index.js
 import { ALL_TOOLS } from "../packages/mcp/src/tools/index.js";
 import type { Capability } from "../packages/mcp/src/config.js";
 
-const DEFAULT_CAPS = ["core", "ai", "marketplace", "apps", "artifacts", "sessions"] as const;
+const DEFAULT_CAPS = ["core", "ai", "marketplace", "apps", "artifacts"] as const;
 
 function parseCaps(argv: string[]): Capability[] {
   const flag = argv.find((a) => a.startsWith("--caps="));
@@ -132,8 +132,11 @@ async function main(): Promise<number> {
     results.push(await runStep(srv, "list marketplace apps", "tr_marketplace_list_apps", {}));
     results.push(await runStep(srv, "list connected apps", "tr_apps_list", {}));
     results.push(await runStep(srv, "list AI tools", "tr_ai_list_tools", {}));
+    // `tr_generate_dashboard` was removed in 3.3.0; artifact generation goes
+    // through the universal executor with the platform tool name.
     results.push(
-      await runStep(srv, "generate dashboard", "tr_generate_dashboard", {
+      await runStep(srv, "generate dashboard via tr_ai_execute", "tr_ai_execute", {
+        tool_name: "generate_dashboard",
         input: { title: "Smoke dashboard" },
       }),
     );

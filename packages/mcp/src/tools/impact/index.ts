@@ -217,7 +217,3 @@ function diffFiles(diff?: string): string[] {
 function stripPrefix(p: string): string {
   return p.replace(/^[ab]\//, "").replace(/^--- /, "").replace(/^\+\+\+ /, "").trim();
 }
-
-export function registerImpactTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of impactTools) register(t);
-}

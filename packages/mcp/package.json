@@ -1,6 +1,6 @@
 {
   "name": "@testrelic/mcp",
-  "version": "3.2.1",
+  "version": "3.3.2",
   "description": "TestRelic MCP Server — cloud-wired intelligent testing context (test creation, auto-healing, coverage gaps, test impact). One token; everything else is resolved.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,7 +21,7 @@
     "dist/**/*",
     "README.md",
     "LICENSE",
-    ".cursor/skills/**/*"
+    ".agents/skills/**/*"
   ],
   "scripts": {
     "build": "tsc -b",
@@ -31,7 +31,11 @@
     "dev:http": "tsx src/cli.ts --port 3000",
     "update-readme": "node scripts/update-readme.js",
     "copy-config": "node scripts/copy-config.js",
-    "roll": "npm run copy-config && npm run update-readme"
+    "roll": "npm run copy-config && npm run update-readme && npm run update-skill && npm run mirror-skills",
+    "update-skill": "node scripts/update-skill.js",
+    "mirror-skills": "node scripts/mirror-skills.js",
+    "check-skills": "node scripts/mirror-skills.js --check",
+    "prepack": "node scripts/mirror-skills.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

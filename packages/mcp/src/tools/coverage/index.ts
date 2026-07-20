@@ -229,10 +229,15 @@ export const coverageTools: ToolDefinition[] = [
   },
   {
     name: "tr_fetch_cached",
-    capability: "coverage",
+    // MUST be `core`, not `coverage`. Every tool result in every capability is
+    // truncated to tokenBudgetPerTool and hands back a cacheKey; this is the
+    // only tool that redeems one. While it was gated behind `coverage`, a client
+    // running e.g. `--caps core,triage` received truncated results with a
+    // cacheKey it had no registered tool to redeem. Fixed in 3.3.0.
+    capability: "core",
     title: "Fetch a cached full payload",
     description:
-      "Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency).",
+      "Fetches a payload referenced by a cache_key returned from another tool. Used to opt into large content only when needed (token efficiency). Any tool result may be truncated to the token budget — when it is, the response carries a cacheKey you redeem here.",
     inputSchema: {
       cache_key: z.string(),
     },
@@ -250,7 +255,3 @@ export const coverageTools: ToolDefinition[] = [
     },
   },
 ];
-
-export function registerCoverageTools(ctx: ToolContext, register: (def: ToolDefinition) => void): void {
-  for (const t of coverageTools) register(t);
-}
