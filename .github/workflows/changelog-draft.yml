@@ -1,0 +1,106 @@
+name: Draft docs changelog entry
+
+# On every version tag (the same trigger publish-npm.yml uses to ship
+# @testrelic/mcp), draft a customer-facing changelog entry as a PR against
+# testrelic-ai/docs (docs-next-migration branch), for a human to rewrite into
+# plain-language copy and merge. There's no CHANGELOG.md or GitHub Release
+# body here, so the raw material is the commit log since the previous tag —
+# which is engineering-facing (commit messages, internal names) and not
+# something a customer should see verbatim. See docs-next's changelog
+# conventions (content/changelog/*.mdx) for the "no internal names,
+# customer-facing" bar the rewrite needs to clear.
+#
+# Requires a `DOCS_REPO_TOKEN` repo secret: a PAT (or GitHub App token) with
+# `contents:write` + `pull-requests:write` on testrelic-ai/docs. Create it
+# under Settings > Secrets and variables > Actions before this can run.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  draft-changelog-entry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: mcp
+
+      - name: Check out docs repo
+        uses: actions/checkout@v4
+        with:
+          repository: testrelic-ai/docs
+          ref: docs-next-migration
+          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          path: docs
+
+      - name: Draft changelog entry
+        id: draft
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%d)
+          VERSION="${TAG#v}"
+          BRANCH="changelog/mcp-${VERSION}"
+          FILE="content/changelog/${DATE}-mcp-${VERSION}.mdx"
+
+          PREV_TAG=$(cd mcp && git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            COMMIT_LOG=$(cd mcp && git log --no-merges --format='- %s' "${PREV_TAG}..${TAG}" | head -60)
+          else
+            COMMIT_LOG=$(cd mcp && git log --no-merges --format='- %s' "$TAG" | head -60)
+          fi
+
+          cd docs
+          git checkout -b "$BRANCH"
+
+          cat > "$FILE" <<EOF
+          ---
+          title: "TODO: customer-facing title for MCP Server ${TAG}"
+          date: "${DATE}"
+          product: "MCP Server"
+          draft: true
+          ---
+
+          TODO: rewrite in plain, customer-facing language before flipping
+          \`draft\` to false and merging. No internal package/tool/dependency
+          names — describe the capability or fix from the customer's point
+          of view (see other content/changelog/*.mdx entries for the bar).
+
+          Source: testrelic-mcp-server ${TAG}
+
+          <!--
+          Raw commit log since ${PREV_TAG:-the beginning} (engineering-facing —
+          reference only, NOT for direct publish):
+
+          ${COMMIT_LOG}
+          -->
+          EOF
+
+          git config user.name "testrelic-docs-bot"
+          git config user.email "docs-bot@testrelic.ai"
+          git add "$FILE"
+          git commit -q -m "changelog: draft MCP Server ${TAG} entry (needs customer-facing rewrite)"
+          git push -q origin "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Open draft PR
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          BRANCH: ${{ steps.draft.outputs.branch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh pr create \
+            --repo testrelic-ai/docs \
+            --base docs-next-migration \
+            --head "$BRANCH" \
+            --draft \
+            --title "changelog: MCP Server ${TAG} (needs customer-facing rewrite)" \
+            --body "Auto-drafted from testrelic-mcp-server's ${TAG} tag. **Do not merge as-is** — rewrite the title/body in plain customer language per docs-next's changelog conventions (no internal package/tool names), flip \`draft: false\`, then mark ready for review."
