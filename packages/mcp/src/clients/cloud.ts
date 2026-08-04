@@ -546,6 +546,9 @@ export function cloudOps(client: ServiceClient) {
     },
 
     // ── Marketplace surface (mcp:marketplace) ────────────────────────────
+    // `comingSoon` is OPTIONAL on the wire: the platform's catalog only
+    // serialises the flag when it is true, so most rows arrive without it.
+    // Callers must default it — see tr_marketplace_list_apps.
     listMarketplaceApps(): Promise<{
       apps: Array<{
         slug: string;
@@ -556,7 +559,7 @@ export function cloudOps(client: ServiceClient) {
         requiresOAuth: boolean;
         capabilities: string[];
         connected: boolean;
-        comingSoon: boolean;
+        comingSoon?: boolean;
         docsUrl: string;
       }>;
     }> {
