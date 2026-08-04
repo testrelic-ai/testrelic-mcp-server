@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { z } from "zod";
+import { z } from "zod";
 import type { ResolvedConfig, Capability } from "../config.js";
 import type { ClientBundle } from "../clients/index.js";
 import type { BootstrapResponse } from "../clients/cloud.js";
@@ -73,6 +73,23 @@ export interface RegisteredTool {
   deprecated: boolean;
 }
 
+/**
+ * Mirrors the SDK's post-handler `validateToolOutput` check. Returns a compact
+ * description of the first few violations, or undefined when the payload is
+ * valid. Kept deliberately cheap: the SDK runs the same parse on the happy
+ * path, and the cost is trivial next to the upstream HTTP call it follows.
+ */
+function schemaViolation(shape: z.ZodRawShape, structured: Record<string, unknown>): string | undefined {
+  const parsed = z.object(shape).safeParse(structured);
+  if (parsed.success) return undefined;
+  const issues = parsed.error.issues
+    .slice(0, 5)
+    .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+    .join("; ");
+  const more = parsed.error.issues.length > 5 ? ` (+${parsed.error.issues.length - 5} more)` : "";
+  return `${issues}${more}`;
+}
+
 export class ToolRegistry {
   private readonly registered: RegisteredTool[] = [];
 
@@ -94,6 +111,44 @@ export class ToolRegistry {
         const text = result.text.length > 0 ? truncateToTokens(result.text, budget) : "";
         const structured = (result.structured ?? {}) as Record<string, unknown>;
         outputTokens = countObjectTokens(text) + countObjectTokens(structured);
+
+        // Last line of defence against output-schema drift (TEAI-375, TEAI-397).
+        //
+        // The SDK validates `structuredContent` against `outputSchema` after we
+        // return and throws `McpError(InvalidParams, "Output validation error:
+        // …")` on a mismatch. That surfaces to the caller as a bare protocol
+        // failure with the tool's `text` discarded — a 100% outage for the tool
+        // with nothing pointing at the offending field.
+        //
+        // Catching it here downgrades the same drift to an isError result that
+        // names the tool and the violation. `validateToolOutput` returns early
+        // when `isError` is set, so this replaces the SDK's throw rather than
+        // racing it. Note this is a diagnostic, NOT a licence to return
+        // off-schema payloads: handlers must still project onto their declared
+        // schema, and the contract tests pin that.
+        const violation = def.outputSchema ? schemaViolation(def.outputSchema, structured) : undefined;
+        if (violation) {
+          errCode = "INTERNAL";
+          getLogger().error(
+            { tool: def.name, violation },
+            "structured output does not satisfy the tool's declared outputSchema",
+          );
+          return {
+            isError: true as const,
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `${def.name} produced structured output that violates its own outputSchema: ${violation}. ` +
+                  `This is a bug in the tool, not in your input. Partial result follows.\n\n${text}`,
+              },
+            ],
+            structuredContent: {
+              error: { code: "OUTPUT_SCHEMA_VIOLATION", message: violation, tool: def.name },
+            },
+          };
+        }
+
         return {
           content: [{ type: "text" as const, text }],
           structuredContent: structured,
