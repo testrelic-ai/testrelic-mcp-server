@@ -648,14 +648,29 @@ router.post("/repos/:repoId/memory", (req: Request, res: Response) => {
 
 // ── /api/v1/mcp/marketplace/* ──────────────────────────────────────────────
 
+// Mirrors the PROD serialisation of GET /mcp/marketplace/apps, quirks included:
+//   • `comingSoon` is present ONLY on coming-soon apps — a false flag is
+//     omitted entirely, not sent as `false`. The old fixture set it on every
+//     row, which is exactly why the prod-only output-validation failure in
+//     tr_marketplace_list_apps never surfaced locally.
+//   • the list endpoint also returns `configFields`, even though config
+//     fields conceptually belong to the per-app detail endpoint.
+// Keep both quirks: they are the regression fixture.
 const MOCK_MARKETPLACE_APPS = [
-  { slug: "jira", name: "Jira", category: "ticketing", description: "Create and link Jira issues.", authMethod: "basic", requiresOAuth: false, capabilities: ["jira.search", "jira.create", "jira.status"], connected: true, comingSoon: false, docsUrl: "https://support.atlassian.com/jira-software-cloud" },
-  { slug: "github-actions", name: "GitHub Actions", category: "ci", description: "Trigger workflows and view runs.", authMethod: "pat", requiresOAuth: false, capabilities: ["github.runs", "github.logs", "github.trigger"], connected: false, comingSoon: false, docsUrl: "https://docs.github.com/en/actions" },
-  { slug: "amplitude", name: "Amplitude", category: "analytics", description: "Map test paths to user journeys.", authMethod: "apikey", requiresOAuth: false, capabilities: ["amplitude.events", "amplitude.paths"], connected: true, comingSoon: false, docsUrl: "https://amplitude.com/docs/apis/analytics/dashboard-rest" },
+  { slug: "jira", name: "Jira", category: "ticketing", description: "Create and link Jira issues.", authMethod: "basic", requiresOAuth: false, capabilities: ["jira.search", "jira.create", "jira.status"], connected: true, docsUrl: "https://support.atlassian.com/jira-software-cloud" },
+  { slug: "github-actions", name: "GitHub Actions", category: "ci", description: "Trigger workflows and view runs.", authMethod: "pat", requiresOAuth: false, capabilities: ["github.runs", "github.logs", "github.trigger"], connected: false, docsUrl: "https://docs.github.com/en/actions" },
+  { slug: "amplitude", name: "Amplitude", category: "analytics", description: "Map test paths to user journeys.", authMethod: "apikey", requiresOAuth: false, capabilities: ["amplitude.events", "amplitude.paths"], connected: true, docsUrl: "https://amplitude.com/docs/apis/analytics/dashboard-rest" },
+  { slug: "grafana-loki", name: "Grafana Loki", category: "observability", description: "Correlate application logs with test failures.", authMethod: "basic", requiresOAuth: false, capabilities: ["loki.query"], connected: false, comingSoon: true, docsUrl: "https://grafana.com/docs/loki/latest/" },
+];
+
+const MOCK_MARKETPLACE_CONFIG_FIELDS = [
+  { key: "apiKey", label: "API Key", placeholder: "Enter API key", secret: true },
 ];
 
 router.get("/mcp/marketplace/apps", (_req: Request, res: Response) => {
-  res.json({ apps: MOCK_MARKETPLACE_APPS });
+  res.json({
+    apps: MOCK_MARKETPLACE_APPS.map((a) => ({ ...a, configFields: MOCK_MARKETPLACE_CONFIG_FIELDS })),
+  });
 });
 
 router.get("/mcp/marketplace/apps/:slug", (req: Request, res: Response) => {
@@ -663,9 +678,7 @@ router.get("/mcp/marketplace/apps/:slug", (req: Request, res: Response) => {
   if (!app) return res.status(404).json({ error: { code: "APP_NOT_FOUND" } });
   res.json({
     ...app,
-    configFields: [
-      { key: "apiKey", label: "API Key", placeholder: "Enter API key", secret: true },
-    ],
+    configFields: MOCK_MARKETPLACE_CONFIG_FIELDS,
   });
 });
 

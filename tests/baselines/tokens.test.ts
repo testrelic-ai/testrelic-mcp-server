@@ -109,7 +109,11 @@ describe("token baselines", () => {
     }
   });
 
-  it("tr_marketplace_list_apps stays under 1200 tokens for the mock catalog (3 apps)", async () => {
+  // The mock catalog mirrors prod's serialisation, so the list rows carry the
+  // `configFields` the endpoint really returns. The handler projects them away
+  // (they belong to tr_marketplace_get_app), which is what keeps this under
+  // the ceiling — against raw prod rows the same payload measures ~1400.
+  it("tr_marketplace_list_apps stays under 1200 tokens for the mock catalog (4 apps)", async () => {
     const srv = await startInProcessServer({ capabilities: ALL_CAPS });
     try {
       const result = await runTool("tr_marketplace_list_apps", {}, srv);
