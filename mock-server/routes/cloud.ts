@@ -155,22 +155,55 @@ router.get("/runs/:runId", (req: Request, res: Response) => {
 });
 
 // ── /api/v1/runs/:runId/timeline ───────────────────────────────────────────
+// Mirrors the PLATFORM's shape, not the MCP client's: `{ steps, total, runId }`
+// where each row is a `TimelineStepResponse` (cloud-platform-app
+// shared/types/run.ts) — `testTitle`, `errorMessage`, `stackTrace`, `duration`,
+// `specFile`, and NO nested `error` object, no `durationMs`, `retry` or `suite`.
+//
+// This used to emit the CLIENT's field names, which made every consumer look
+// correct here while rendering blank test names and empty error messages against
+// real prod. A mock kinder than production does not de-risk a release; it hides
+// the bug until a customer finds it (TEAI-262, TEAI-397 — same pattern).
+//
+// A row is a STEP, not a test: real timelines repeat a testId across actions, so
+// each failure emits a passing setup step plus the failing one.
 router.get("/runs/:runId/timeline", (req: Request, res: Response) => {
   const failures = mockFailures[req.params.runId];
   if (!failures) {
-    res.json({ timeline: [] });
+    res.json({ steps: [], total: 0, runId: req.params.runId });
     return;
   }
-  const timeline = failures.failures.map((f) => ({
-    testId: f.test_id,
-    title: f.test_name,
-    suite: f.suite,
-    status: "failed",
-    durationMs: f.duration_ms,
-    retry: f.retry_count,
-    error: { type: f.error_type, message: f.error_message, stack: f.stack_trace },
-  }));
-  res.json({ timeline });
+  const steps = failures.failures.flatMap((f) => [
+    {
+      timestamp: new Date(0).toISOString(),
+      action: `${f.test_name} › setup`,
+      status: "passed",
+      duration: 12,
+      testId: f.test_id,
+      testTitle: f.test_name,
+      specFile: f.suite,
+      errorMessage: null,
+      stackTrace: null,
+      screenshotUrl: null,
+      videoOffset: null,
+      runId: req.params.runId,
+    },
+    {
+      timestamp: new Date(0).toISOString(),
+      action: `${f.test_name} › assert`,
+      status: "failed",
+      duration: f.duration_ms,
+      testId: f.test_id,
+      testTitle: f.test_name,
+      specFile: f.suite,
+      errorMessage: f.error_message,
+      stackTrace: f.stack_trace,
+      screenshotUrl: f.screenshot_url || null,
+      videoOffset: f.video_timestamp_ms ? f.video_timestamp_ms / 1000 : null,
+      runId: req.params.runId,
+    },
+  ]);
+  res.json({ steps, total: steps.length, runId: req.params.runId });
 });
 
 // ── /api/v1/repos/:repoId/runs/:runId/tests ────────────────────────────────
