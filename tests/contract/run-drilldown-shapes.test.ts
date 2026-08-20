@@ -65,7 +65,8 @@ describe("cloud client tolerates the platform's real run-detail shapes", () => {
     await expect(cloud.getRun("missing")).rejects.toThrow(/not found/i);
   });
 
-  it("getRunFailures reads a { steps } timeline (prod shape) without crashing", async () => {
+  it("getRunFailures reads a { steps } timeline carrying the LEGACY row fields", async () => {
+    // The old upstream/mock spelling — kept working as a fallback.
     const tr = legacyTestRelicAdapter(
       cloudOps(
         stubClient({
@@ -84,6 +85,94 @@ describe("cloud client tolerates the platform's real run-detail shapes", () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]?.test_name).toBe("Stage create persists");
     expect(failures[0]?.error_type).toBe("AssertionError");
+  });
+
+  /**
+   * The REAL production row — `TimelineStepResponse` from cloud-platform-app
+   * `shared/types/run.ts`: `testTitle` / `errorMessage` / `stackTrace` /
+   * `duration` / `specFile`, with NO nested `error`, `durationMs`, `retry` or
+   * `suite`.
+   *
+   * The previous version of this file claimed to cover "the prod shape" but only
+   * fixed the ENVELOPE ({steps} vs {timeline}) and then used the client's own row
+   * names — so the fields stayed unmapped and every failure rendered blank
+   * against prod while this suite stayed green. Assert the VALUES, not just the
+   * absence of a crash.
+   */
+  it("getRunFailures maps the real platform row fields (not blanks)", async () => {
+    const tr = legacyTestRelicAdapter(
+      cloudOps(
+        stubClient({
+          "/runs/r1/timeline": {
+            steps: [
+              {
+                status: "failed",
+                testId: "a",
+                testTitle: "Auth > login redirects",
+                specFile: "auth.spec.ts",
+                errorMessage: "Navigation timeout 15000ms exceeded",
+                stackTrace: "at auth.spec.ts:12",
+                duration: 4200,
+                screenshotUrl: "https://s3/shot.png",
+                videoOffset: 3.5,
+              },
+              { status: "passed", testId: "b", testTitle: "noop" },
+            ],
+            total: 2,
+            runId: "r1",
+          },
+        }),
+      ),
+    );
+    const { failures } = await tr.getRunFailures("r1");
+    expect(failures).toHaveLength(1);
+    const f = failures[0]!;
+    expect(f.test_name).toBe("Auth > login redirects");
+    expect(f.error_message).toBe("Navigation timeout 15000ms exceeded");
+    expect(f.stack_trace).toBe("at auth.spec.ts:12");
+    expect(f.duration_ms).toBe(4200);
+    expect(f.suite).toBe("auth.spec.ts");
+    expect(f.screenshot_url).toBe("https://s3/shot.png");
+    expect(f.video_timestamp_ms).toBe(3500); // videoOffset is SECONDS
+  });
+
+  it("getRunFailures counts a timed-out test as a failure", async () => {
+    // The platform normalizes Playwright's `timedOut` to `timedout`; filtering
+    // on "failed" alone dropped these entirely.
+    const tr = legacyTestRelicAdapter(
+      cloudOps(
+        stubClient({
+          "/runs/r1/timeline": {
+            steps: [{ status: "timedout", testId: "a", testTitle: "slow test", errorMessage: "exceeded" }],
+          },
+        }),
+      ),
+    );
+    const { failures } = await tr.getRunFailures("r1");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.error_type).toBe("TimeoutError");
+  });
+
+  it("getRunFailures collapses many failed STEPS of one test into one failure", async () => {
+    // Timeline rows are actions, not test cases: without a dedupe the same test
+    // was reported once per failing step.
+    const tr = legacyTestRelicAdapter(
+      cloudOps(
+        stubClient({
+          "/runs/r1/timeline": {
+            steps: [
+              { status: "failed", testId: "a", testTitle: "Checkout", action: "click", errorMessage: "" },
+              { status: "failed", testId: "a", testTitle: "Checkout", action: "assert", errorMessage: "expected 12 got 0" },
+              { status: "failed", testId: "c", testTitle: "Search", errorMessage: "stale index" },
+            ],
+          },
+        }),
+      ),
+    );
+    const { failures } = await tr.getRunFailures("r1");
+    expect(failures).toHaveLength(2);
+    // and it keeps the row that actually carries the message
+    expect(failures.find((f) => f.test_id === "a")?.error_message).toBe("expected 12 got 0");
   });
 
   it("getRunFailures still reads a { timeline } shape", async () => {
