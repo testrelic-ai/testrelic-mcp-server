@@ -26,13 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out this repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           path: mcp
 
       - name: Check out docs repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: testrelic-ai/docs
           ref: docs-next-migration
