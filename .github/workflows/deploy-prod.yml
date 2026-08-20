@@ -17,6 +17,15 @@ env:
   ECS_SERVICE_NAME: ${{ vars.PROD_MCP_ECS_SERVICE }}
   ECS_TASK_FAMILY: ${{ vars.PROD_MCP_TASK_FAMILY }}
   INGRESS_HOST: ${{ vars.PROD_MCP_HOST }}
+  # Capabilities the hosted PROD server registers. Without this the container
+  # falls back to config.ts's `["core"]` default, and `ToolRegistry.register`
+  # silently skips every gated tool — prod was serving 7 tools while stage
+  # served 15, so tr_diagnose_run, tr_ai_rca, tr_suggest_fix, tr_create_jira and
+  # the rest simply did not exist for any hosted client. An unregistered tool is
+  # not an error the caller can see; it reads as "the tool does nothing".
+  # Mirrors MCP_CAPS in deploy-stage.yml. The remaining capabilities
+  # (ai, marketplace, apps, artifacts, memory) stay off by design.
+  MCP_CAPS: core,coverage,creation,healing,impact,triage,signals,devtools
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
@@ -110,10 +119,14 @@ jobs:
           # Without it the hosted endpoint 403s every POST /mcp (the 3.3.x
           # hardening). Idempotent: drop any prior value, then add the current
           # public host + its new.* preview alias.
-          jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" \
+          #
+          # TESTRELIC_MCP_CAPS is injected the same way — see MCP_CAPS above for
+          # why the default `core`-only surface is not what prod should serve.
+          jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" --arg CAPS "${{ env.MCP_CAPS }}" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
              | .containerDefinitions[0].image = $IMAGE
-             | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])' \
+             | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])' \
             /tmp/task-def.json > /tmp/task-def-updated.json
 
       - name: Register new task definition revision

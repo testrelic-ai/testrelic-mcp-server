@@ -17,6 +17,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { createServer, type TestRelicServer } from "../packages/mcp/src/index.js";
 import { ALL_TOOLS } from "../packages/mcp/src/tools/index.js";
 import type { Capability } from "../packages/mcp/src/config.js";
@@ -95,6 +96,20 @@ async function runStep(
     const result = await tool.handler(input, srv.__ctx);
     const isError = (result as { isError?: boolean }).isError === true;
     if (isError) return { step, ok: false, detail: "handler returned isError" };
+    // Calling the handler directly skips the MCP SDK's outputSchema check, so
+    // a step could pass here and still fail for every real client with
+    // "Output validation error" (this is exactly how the missing `comingSoon`
+    // default on tr_marketplace_list_apps reached prod). Re-run the SDK's
+    // check so a `--caps=...` smoke against a real platform catches shape
+    // drift the local mock does not reproduce.
+    if (tool.outputSchema) {
+      const parsed = z.object(tool.outputSchema).safeParse(result.structured);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const where = issue?.path.join(".") || "(root)";
+        return { step, ok: false, detail: `output schema: ${where} — ${issue?.message ?? "invalid"}` };
+      }
+    }
     const summary = (result.text ?? "").split("\n")[0]?.slice(0, 80) ?? "(no text)";
     return { step, ok: true, detail: summary };
   } catch (err) {

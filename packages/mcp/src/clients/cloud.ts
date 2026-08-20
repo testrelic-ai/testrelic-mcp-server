@@ -1,3 +1,4 @@
+import { UpstreamError } from "../errors.js";
 import type { ServiceClient } from "./http.js";
 import type {
   ActiveAlert,
@@ -14,6 +15,7 @@ import type {
   ProjectConfig,
   ProjectTrends,
   RunFailuresResponse,
+  TestFailure,
   TestCoverageEntry,
   TestRun,
   UserJourney,
@@ -237,6 +239,105 @@ function toJiraTicket(i: PlatformJiraIssue): JiraTicket {
     labels: i.labels ?? [],
     created_at: i.created ?? new Date(0).toISOString(),
   };
+}
+
+/**
+ * Read a collection out of an upstream payload WITHOUT assuming the 200 that
+ * carried it is actually the shape we asked for.
+ *
+ * A resolved promise is not a shape guarantee. `platform.testrelic.ai` sits
+ * behind a CloudFront distribution whose SPA custom error responses rewrite
+ * BOTH 403 and 404 into `200 /index.html`, distribution-wide — `/api/*`
+ * included. So "grafana-loki is not connected" (an origin 404) reaches this
+ * process as a 200 carrying an HTML *string*, axios resolves it, and the
+ * `.catch()` fallbacks below never fire. Indexing straight into `.lines` /
+ * `.issues` / `.scores` then throws a bare `TypeError: Cannot read properties
+ * of undefined (reading 'map')` that names neither the tool nor the cause
+ * (TEAI-376; same class as TEAI-262's "reading 'filter'").
+ *
+ * Returns `undefined` when the key is not an array, so callers can tell
+ * "upstream said zero rows" apart from "upstream did not answer in our
+ * vocabulary" — those two must never render the same.
+ */
+/**
+ * Project ONE timeline row onto a `TestFailure`.
+ *
+ * The platform's row is a `TimelineStepResponse` (shared/types/run.ts):
+ * `testTitle`, `errorMessage`, `stackTrace`, `duration`, `specFile` — it has no
+ * nested `error` object, no `durationMs`, no `retry` and no `suite`. Reading the
+ * client-side names alone produced a failure list with the right COUNT and blank
+ * everything else: no test name, `error_type` permanently "Error", empty message.
+ * The mock and even the "(prod shape)" regression test used the client's names,
+ * so nothing caught it — the envelope was fixed in TEAI-262 and the rows were not.
+ *
+ * Platform names are read FIRST, with the legacy/mock names kept as fallbacks so
+ * an older upstream (and the fixtures that mimic it) still resolve.
+ */
+function toFailure(t: Record<string, unknown>): TestFailure {
+  const err = t.error as Record<string, unknown> | undefined;
+  const status = String(t.status ?? "").toLowerCase();
+  const message = String(t.errorMessage ?? err?.message ?? "");
+  return {
+    test_id: String(t.testId ?? t.id ?? ""),
+    // `action` is the step label — the last resort when a row carries no test title.
+    test_name: String(t.testTitle ?? t.title ?? t.name ?? t.action ?? ""),
+    suite: String(t.suite ?? t.specFile ?? ""),
+    // The platform sends no error TYPE. Infer the one thing that is knowable
+    // rather than labelling a timeout "Error".
+    error_type: String(err?.type ?? (status === "timedout" ? "TimeoutError" : "Error")),
+    error_message: message,
+    stack_trace: String(t.stackTrace ?? err?.stack ?? ""),
+    duration_ms: Number(t.durationMs ?? t.duration ?? 0),
+    retry_count: Number(t.retry ?? 0),
+    video_url: "",
+    // `videoOffset` is SECONDS from the start of the recording (and null on
+    // backfilled rows); this field is milliseconds.
+    video_timestamp_ms: t.videoOffset == null ? 0 : Number(t.videoOffset) * 1000,
+    screenshot_url: String(t.screenshotUrl ?? ""),
+  };
+}
+
+/**
+ * Timeline rows are STEPS, not test cases: one failing test can contribute
+ * several failed actions, which previously rendered as several "failures" for
+ * the same test. Collapse per test and keep the most informative row — the one
+ * that actually carries an error message.
+ */
+function dedupeFailuresByTest(failures: TestFailure[]): TestFailure[] {
+  const byTest = new Map<string, TestFailure>();
+  const out: TestFailure[] = [];
+  for (const f of failures) {
+    // No test id and no name — nothing to collapse on; keep it as its own row
+    // rather than merging unrelated steps under an empty key.
+    const key = f.test_id || f.test_name;
+    if (!key) {
+      out.push(f);
+      continue;
+    }
+    const seen = byTest.get(key);
+    if (!seen) {
+      byTest.set(key, f);
+      out.push(f);
+      continue;
+    }
+    if (!seen.error_message && f.error_message) {
+      Object.assign(seen, f);
+    }
+  }
+  return out;
+}
+
+function collection<T>(payload: unknown, key: string): T[] | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const v = (payload as Record<string, unknown>)[key];
+  return Array.isArray(v) ? (v as T[]) : undefined;
+}
+
+/** Same idea for a scalar count: trust the row count over an absent/garbage `total`. */
+function countOr(payload: unknown, key: string, fallback: number): number {
+  if (typeof payload !== "object" || payload === null) return fallback;
+  const n = Number((payload as Record<string, unknown>)[key]);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 // ── CloudOps ────────────────────────────────────────────────────────────────
@@ -546,6 +647,9 @@ export function cloudOps(client: ServiceClient) {
     },
 
     // ── Marketplace surface (mcp:marketplace) ────────────────────────────
+    // `comingSoon` is OPTIONAL on the wire: the platform's catalog only
+    // serialises the flag when it is true, so most rows arrive without it.
+    // Callers must default it — see tr_marketplace_list_apps.
     listMarketplaceApps(): Promise<{
       apps: Array<{
         slug: string;
@@ -556,7 +660,7 @@ export function cloudOps(client: ServiceClient) {
         requiresOAuth: boolean;
         capabilities: string[];
         connected: boolean;
-        comingSoon: boolean;
+        comingSoon?: boolean;
         docsUrl: string;
       }>;
     }> {
@@ -723,24 +827,14 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       // malformed shape reach `.filter` (this was the "Cannot read properties of
       // undefined (reading 'filter')" crash in tr_replay_failure — TEAI-262).
       const rows = Array.isArray(timeline?.timeline) ? timeline.timeline : [];
-      return {
-        run_id: runId,
-        failures: rows
-          .filter((t) => String(t.status ?? "").toLowerCase() === "failed")
-          .map((t) => ({
-            test_id: String(t.testId ?? t.id ?? ""),
-            test_name: String(t.title ?? t.name ?? ""),
-            suite: String(t.suite ?? ""),
-            error_type: String((t.error as Record<string, unknown> | undefined)?.type ?? "Error"),
-            error_message: String((t.error as Record<string, unknown> | undefined)?.message ?? ""),
-            stack_trace: String((t.error as Record<string, unknown> | undefined)?.stack ?? ""),
-            duration_ms: Number(t.durationMs ?? 0),
-            retry_count: Number(t.retry ?? 0),
-            video_url: "",
-            video_timestamp_ms: 0,
-            screenshot_url: "",
-          })),
-      };
+      // A timed-out test is a failure the caller cares about, and the platform
+      // normalizes Playwright's `timedOut` to `timedout` — filtering on "failed"
+      // alone silently dropped them.
+      const FAILED = new Set(["failed", "timedout"]);
+      const failures = rows
+        .filter((t) => FAILED.has(String(t.status ?? "").toLowerCase()))
+        .map((t) => toFailure(t));
+      return { run_id: runId, failures: dedupeFailuresByTest(failures) };
     },
     async getFlakyTests(p: { project_id?: string; days?: number; threshold?: number }): Promise<{
       data: FlakyTest[];
@@ -980,8 +1074,9 @@ export function legacyAmplitudeAdapter(cloud: CloudOps) {
   return {
     async getUserCount(run_id: string): Promise<AmplitudeUserCount> {
       const res = await cloud.amplitudeEvents({ eventType: "error" }).catch(() => ({ eventType: "error", points: [] as Array<{ date: string; count: number }> }));
-      const total = res.points.reduce((s, p) => s + p.count, 0);
-      const peak = res.points.reduce((a, b) => (a.count > b.count ? a : b), { date: new Date().toISOString(), count: 0 });
+      const points = collection<{ date: string; count: number }>(res, "points") ?? [];
+      const total = points.reduce((s, p) => s + p.count, 0);
+      const peak = points.reduce((a, b) => (a.count > b.count ? a : b), { date: new Date().toISOString(), count: 0 });
       return { run_id, affected_users: total, peak_time: peak.date, error_path: "" };
     },
     async getSessions(run_id: string, limit = 50): Promise<{ run_id: string; sessions: AmplitudeSession[]; total: number }> {
@@ -1034,8 +1129,24 @@ export function legacyLokiAdapter(cloud: CloudOps) {
       const hours = hoursMatch ? parseInt(hoursMatch[1]!, 10) : 24;
       const start = new Date(now - hours * 3600 * 1000).toISOString();
       const end = new Date(now).toISOString();
-      const r = await cloud.lokiLogs({ query, start, end, limit: 500 }).catch(() => ({ lines: [], total: 0 }) as PlatformLokiResponse);
-      const lines = r.lines.map((l) => ({
+      // No `.catch()` swallow here: a Loki query that did not run must not be
+      // reported as a quiet production signal. `wrapUpstreamError` has already
+      // turned a real failure into a typed TestRelicMcpError with actionable
+      // text ("… 404 Not Found" for an unconnected integration), and the
+      // registry renders that as an isError result. `tr_user_impact` degrades
+      // on its own with `.catch(() => null)`.
+      const r = await cloud.lokiLogs({ query, start, end, limit: 500 });
+      const raw = collection<PlatformLokiLog>(r, "lines");
+      if (!raw) {
+        throw new UpstreamError(
+          "Loki query returned a payload with no `lines` array. The platform proxy answered 2xx but not with a log response — " +
+            "typically CloudFront rewriting a 403/404 (e.g. the grafana-loki integration is not connected) into 200 + index.html. " +
+            "Connect Grafana Loki under Settings → Integrations, or check the response's content-type and X-Cache header.",
+          "cloud",
+          false,
+        );
+      }
+      const lines = raw.map((l) => ({
         timestamp: l.timestamp,
         level: String(l.labels?.level ?? "info"),
         service: String(l.labels?.service ?? "unknown"),
@@ -1047,7 +1158,7 @@ export function legacyLokiAdapter(cloud: CloudOps) {
         time_range: time_range ?? `${hours}h`,
         error_rate_peak: peak,
         peak_time: lines[0]?.timestamp ?? new Date().toISOString(),
-        total_errors: r.total,
+        total_errors: countOr(r, "total", lines.length),
         log_lines: lines,
       };
     },
@@ -1058,7 +1169,8 @@ export function legacyJiraAdapter(cloud: CloudOps) {
   return {
     async findIssuesByLabel(label: string): Promise<{ issues: JiraTicket[]; total: number }> {
       const r = await cloud.jiraSearch({ q: label }).catch(() => ({ issues: [], total: 0 }) as PlatformJiraSearch);
-      return { issues: r.issues.map(toJiraTicket), total: r.total };
+      const issues = (collection<PlatformJiraIssue>(r, "issues") ?? []).map(toJiraTicket);
+      return { issues, total: countOr(r, "total", issues.length) };
     },
     async createIssue(body: {
       summary: string;
@@ -1077,8 +1189,9 @@ export function legacyClickhouseAdapter(cloud: CloudOps) {
     async queryFlakinessScores(run_id: string): Promise<{ data: FlakinessQueryResult[]; rows: number }> {
       // ClickHouse does not exist on cloud-platform-app; derive approximate flakiness.
       const r = await cloud.getFlakiness(undefined, 7).catch(() => ({ window: 7, scores: [] }));
+      const scores = collection<FlakinessRow>(r, "scores") ?? [];
       return {
-        data: r.scores.map((s) => ({
+        data: scores.map((s) => ({
           test_id: s.testId,
           test_name: s.testTitle,
           flakiness_score: toFraction(s.score),
@@ -1086,7 +1199,7 @@ export function legacyClickhouseAdapter(cloud: CloudOps) {
           run_count_7d: s.totalRuns,
           failure_count_7d: s.flakyRuns,
         })),
-        rows: r.scores.length,
+        rows: scores.length,
       };
     },
   };

@@ -72,7 +72,10 @@ export const creationTools: ToolDefinition[] = [
         goal = goal ?? `Cover the user journey "${journey.name}" end-to-end in ${framework}.`;
       }
       if (!goal) {
-        return { text: "No goal or journey_id provided. Pass `goal` or `journey_id`.", structured: {} };
+        // Must throw, not return: this tool's outputSchema requires `plan` and
+        // `cache_key`, so an empty `structured` is rejected wholesale by the
+        // SDK and the caller never sees this guidance. See TEAI-375.
+        throw new InvalidInputError("No goal or journey_id provided. Pass `goal` or `journey_id`.");
       }
 
       if (!prd) {
@@ -195,15 +198,32 @@ export const creationTools: ToolDefinition[] = [
         const cached = ctx.cache.get<{ plan: TestPlan }>(input.plan_cache_key as string);
         if (cached) plan = cached.value.plan;
       }
+      // These branches must throw rather than return a partial payload: this
+      // tool's outputSchema requires file_path, framework, cache_key and code,
+      // so `structured: {}` is rejected wholesale by the SDK's output check and
+      // the caller receives nothing at all — not even the guidance below. A
+      // typed error short-circuits that check and preserves the message.
+      // See TEAI-375.
       if (!plan) {
-        return {
-          text: "No plan found. Pass a `plan` object directly or a `plan_cache_key` from tr_plan_test.",
-          structured: {},
-        };
+        if (input.plan_cache_key) {
+          // The key was valid when tr_plan_test minted it. L1 expires after
+          // 60s and L2 is per-instance, so a follow-up call that lands on
+          // another server instance (streamable HTTP behind >1 task) or
+          // arrives late will miss. Recoverable — say how.
+          throw new NotFoundError(
+            `Plan cache_key "${String(input.plan_cache_key)}" is no longer available (expired, or minted by a different server instance). ` +
+              "Re-run `tr_plan_test` for a fresh cache_key, or pass the `plan` object inline — inline plans never expire.",
+          );
+        }
+        throw new InvalidInputError(
+          "No plan found. Pass a `plan` object directly or a `plan_cache_key` from tr_plan_test.",
+        );
       }
       const template = TEMPLATES[plan.framework];
       if (!template) {
-        return { text: `Framework "${plan.framework}" has no template. Try playwright, cypress, jest, or vitest.`, structured: {} };
+        throw new InvalidInputError(
+          `Framework "${plan.framework}" has no template. Try playwright, cypress, jest, or vitest.`,
+        );
       }
       const defaultName = `generated-${plan.journey_id ?? Date.now()}${template.extension}`;
       // Strip any directory components a caller may have smuggled in

@@ -155,22 +155,55 @@ router.get("/runs/:runId", (req: Request, res: Response) => {
 });
 
 // ── /api/v1/runs/:runId/timeline ───────────────────────────────────────────
+// Mirrors the PLATFORM's shape, not the MCP client's: `{ steps, total, runId }`
+// where each row is a `TimelineStepResponse` (cloud-platform-app
+// shared/types/run.ts) — `testTitle`, `errorMessage`, `stackTrace`, `duration`,
+// `specFile`, and NO nested `error` object, no `durationMs`, `retry` or `suite`.
+//
+// This used to emit the CLIENT's field names, which made every consumer look
+// correct here while rendering blank test names and empty error messages against
+// real prod. A mock kinder than production does not de-risk a release; it hides
+// the bug until a customer finds it (TEAI-262, TEAI-397 — same pattern).
+//
+// A row is a STEP, not a test: real timelines repeat a testId across actions, so
+// each failure emits a passing setup step plus the failing one.
 router.get("/runs/:runId/timeline", (req: Request, res: Response) => {
   const failures = mockFailures[req.params.runId];
   if (!failures) {
-    res.json({ timeline: [] });
+    res.json({ steps: [], total: 0, runId: req.params.runId });
     return;
   }
-  const timeline = failures.failures.map((f) => ({
-    testId: f.test_id,
-    title: f.test_name,
-    suite: f.suite,
-    status: "failed",
-    durationMs: f.duration_ms,
-    retry: f.retry_count,
-    error: { type: f.error_type, message: f.error_message, stack: f.stack_trace },
-  }));
-  res.json({ timeline });
+  const steps = failures.failures.flatMap((f) => [
+    {
+      timestamp: new Date(0).toISOString(),
+      action: `${f.test_name} › setup`,
+      status: "passed",
+      duration: 12,
+      testId: f.test_id,
+      testTitle: f.test_name,
+      specFile: f.suite,
+      errorMessage: null,
+      stackTrace: null,
+      screenshotUrl: null,
+      videoOffset: null,
+      runId: req.params.runId,
+    },
+    {
+      timestamp: new Date(0).toISOString(),
+      action: `${f.test_name} › assert`,
+      status: "failed",
+      duration: f.duration_ms,
+      testId: f.test_id,
+      testTitle: f.test_name,
+      specFile: f.suite,
+      errorMessage: f.error_message,
+      stackTrace: f.stack_trace,
+      screenshotUrl: f.screenshot_url || null,
+      videoOffset: f.video_timestamp_ms ? f.video_timestamp_ms / 1000 : null,
+      runId: req.params.runId,
+    },
+  ]);
+  res.json({ steps, total: steps.length, runId: req.params.runId });
 });
 
 // ── /api/v1/repos/:repoId/runs/:runId/tests ────────────────────────────────
@@ -648,14 +681,29 @@ router.post("/repos/:repoId/memory", (req: Request, res: Response) => {
 
 // ── /api/v1/mcp/marketplace/* ──────────────────────────────────────────────
 
+// Mirrors the PROD serialisation of GET /mcp/marketplace/apps, quirks included:
+//   • `comingSoon` is present ONLY on coming-soon apps — a false flag is
+//     omitted entirely, not sent as `false`. The old fixture set it on every
+//     row, which is exactly why the prod-only output-validation failure in
+//     tr_marketplace_list_apps never surfaced locally.
+//   • the list endpoint also returns `configFields`, even though config
+//     fields conceptually belong to the per-app detail endpoint.
+// Keep both quirks: they are the regression fixture.
 const MOCK_MARKETPLACE_APPS = [
-  { slug: "jira", name: "Jira", category: "ticketing", description: "Create and link Jira issues.", authMethod: "basic", requiresOAuth: false, capabilities: ["jira.search", "jira.create", "jira.status"], connected: true, comingSoon: false, docsUrl: "https://support.atlassian.com/jira-software-cloud" },
-  { slug: "github-actions", name: "GitHub Actions", category: "ci", description: "Trigger workflows and view runs.", authMethod: "pat", requiresOAuth: false, capabilities: ["github.runs", "github.logs", "github.trigger"], connected: false, comingSoon: false, docsUrl: "https://docs.github.com/en/actions" },
-  { slug: "amplitude", name: "Amplitude", category: "analytics", description: "Map test paths to user journeys.", authMethod: "apikey", requiresOAuth: false, capabilities: ["amplitude.events", "amplitude.paths"], connected: true, comingSoon: false, docsUrl: "https://amplitude.com/docs/apis/analytics/dashboard-rest" },
+  { slug: "jira", name: "Jira", category: "ticketing", description: "Create and link Jira issues.", authMethod: "basic", requiresOAuth: false, capabilities: ["jira.search", "jira.create", "jira.status"], connected: true, docsUrl: "https://support.atlassian.com/jira-software-cloud" },
+  { slug: "github-actions", name: "GitHub Actions", category: "ci", description: "Trigger workflows and view runs.", authMethod: "pat", requiresOAuth: false, capabilities: ["github.runs", "github.logs", "github.trigger"], connected: false, docsUrl: "https://docs.github.com/en/actions" },
+  { slug: "amplitude", name: "Amplitude", category: "analytics", description: "Map test paths to user journeys.", authMethod: "apikey", requiresOAuth: false, capabilities: ["amplitude.events", "amplitude.paths"], connected: true, docsUrl: "https://amplitude.com/docs/apis/analytics/dashboard-rest" },
+  { slug: "grafana-loki", name: "Grafana Loki", category: "observability", description: "Correlate application logs with test failures.", authMethod: "basic", requiresOAuth: false, capabilities: ["loki.query"], connected: false, comingSoon: true, docsUrl: "https://grafana.com/docs/loki/latest/" },
+];
+
+const MOCK_MARKETPLACE_CONFIG_FIELDS = [
+  { key: "apiKey", label: "API Key", placeholder: "Enter API key", secret: true },
 ];
 
 router.get("/mcp/marketplace/apps", (_req: Request, res: Response) => {
-  res.json({ apps: MOCK_MARKETPLACE_APPS });
+  res.json({
+    apps: MOCK_MARKETPLACE_APPS.map((a) => ({ ...a, configFields: MOCK_MARKETPLACE_CONFIG_FIELDS })),
+  });
 });
 
 router.get("/mcp/marketplace/apps/:slug", (req: Request, res: Response) => {
@@ -663,9 +711,7 @@ router.get("/mcp/marketplace/apps/:slug", (req: Request, res: Response) => {
   if (!app) return res.status(404).json({ error: { code: "APP_NOT_FOUND" } });
   res.json({
     ...app,
-    configFields: [
-      { key: "apiKey", label: "API Key", placeholder: "Enter API key", secret: true },
-    ],
+    configFields: MOCK_MARKETPLACE_CONFIG_FIELDS,
   });
 });
 

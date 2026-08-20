@@ -42,13 +42,33 @@ export const marketplaceTools: ToolDefinition[] = [
     },
     handler: async (_input, ctx) => {
       const { apps } = await ctx.clients.cloud.listMarketplaceApps();
+      // Project onto the declared schema rather than forwarding the platform
+      // row verbatim. Two prod mismatches make this mandatory, not cosmetic:
+      //   1. `comingSoon` is only serialised when TRUE (6 of 7 prod apps omit
+      //      it), so a required `z.boolean()` failed output validation for the
+      //      whole call — the tool was 100% dead against prod.
+      //   2. the list endpoint also returns `configFields`, which belongs to
+      //      `tr_marketplace_get_app`. Undeclared keys aren't an error, but
+      //      they shipped ~43% of the payload for nothing.
+      const projected = apps.map((a) => ({
+        slug: a.slug,
+        name: a.name,
+        category: a.category,
+        description: a.description,
+        authMethod: a.authMethod,
+        requiresOAuth: a.requiresOAuth,
+        capabilities: a.capabilities,
+        connected: a.connected,
+        comingSoon: a.comingSoon ?? false,
+        docsUrl: a.docsUrl,
+      }));
       const lines = ["## Marketplace Apps", ""];
-      for (const a of apps) {
+      for (const a of projected) {
         const dot = a.connected ? "●" : a.comingSoon ? "…" : "○";
         const caps = a.capabilities.length ? ` [${a.capabilities.join(", ")}]` : "";
         lines.push(`- ${dot} **${a.slug}** — ${a.name} (${a.category}, ${a.authMethod})${caps}`);
       }
-      return { text: lines.join("\n"), structured: { apps } };
+      return { text: lines.join("\n"), structured: { apps: projected } };
     },
   },
   {
