@@ -15,6 +15,7 @@ import type {
   ProjectConfig,
   ProjectTrends,
   RunFailuresResponse,
+  TestFailure,
   TestCoverageEntry,
   TestRun,
   UserJourney,
@@ -258,6 +259,74 @@ function toJiraTicket(i: PlatformJiraIssue): JiraTicket {
  * "upstream said zero rows" apart from "upstream did not answer in our
  * vocabulary" — those two must never render the same.
  */
+/**
+ * Project ONE timeline row onto a `TestFailure`.
+ *
+ * The platform's row is a `TimelineStepResponse` (shared/types/run.ts):
+ * `testTitle`, `errorMessage`, `stackTrace`, `duration`, `specFile` — it has no
+ * nested `error` object, no `durationMs`, no `retry` and no `suite`. Reading the
+ * client-side names alone produced a failure list with the right COUNT and blank
+ * everything else: no test name, `error_type` permanently "Error", empty message.
+ * The mock and even the "(prod shape)" regression test used the client's names,
+ * so nothing caught it — the envelope was fixed in TEAI-262 and the rows were not.
+ *
+ * Platform names are read FIRST, with the legacy/mock names kept as fallbacks so
+ * an older upstream (and the fixtures that mimic it) still resolve.
+ */
+function toFailure(t: Record<string, unknown>): TestFailure {
+  const err = t.error as Record<string, unknown> | undefined;
+  const status = String(t.status ?? "").toLowerCase();
+  const message = String(t.errorMessage ?? err?.message ?? "");
+  return {
+    test_id: String(t.testId ?? t.id ?? ""),
+    // `action` is the step label — the last resort when a row carries no test title.
+    test_name: String(t.testTitle ?? t.title ?? t.name ?? t.action ?? ""),
+    suite: String(t.suite ?? t.specFile ?? ""),
+    // The platform sends no error TYPE. Infer the one thing that is knowable
+    // rather than labelling a timeout "Error".
+    error_type: String(err?.type ?? (status === "timedout" ? "TimeoutError" : "Error")),
+    error_message: message,
+    stack_trace: String(t.stackTrace ?? err?.stack ?? ""),
+    duration_ms: Number(t.durationMs ?? t.duration ?? 0),
+    retry_count: Number(t.retry ?? 0),
+    video_url: "",
+    // `videoOffset` is SECONDS from the start of the recording (and null on
+    // backfilled rows); this field is milliseconds.
+    video_timestamp_ms: t.videoOffset == null ? 0 : Number(t.videoOffset) * 1000,
+    screenshot_url: String(t.screenshotUrl ?? ""),
+  };
+}
+
+/**
+ * Timeline rows are STEPS, not test cases: one failing test can contribute
+ * several failed actions, which previously rendered as several "failures" for
+ * the same test. Collapse per test and keep the most informative row — the one
+ * that actually carries an error message.
+ */
+function dedupeFailuresByTest(failures: TestFailure[]): TestFailure[] {
+  const byTest = new Map<string, TestFailure>();
+  const out: TestFailure[] = [];
+  for (const f of failures) {
+    // No test id and no name — nothing to collapse on; keep it as its own row
+    // rather than merging unrelated steps under an empty key.
+    const key = f.test_id || f.test_name;
+    if (!key) {
+      out.push(f);
+      continue;
+    }
+    const seen = byTest.get(key);
+    if (!seen) {
+      byTest.set(key, f);
+      out.push(f);
+      continue;
+    }
+    if (!seen.error_message && f.error_message) {
+      Object.assign(seen, f);
+    }
+  }
+  return out;
+}
+
 function collection<T>(payload: unknown, key: string): T[] | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
   const v = (payload as Record<string, unknown>)[key];
@@ -758,24 +827,14 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       // malformed shape reach `.filter` (this was the "Cannot read properties of
       // undefined (reading 'filter')" crash in tr_replay_failure — TEAI-262).
       const rows = Array.isArray(timeline?.timeline) ? timeline.timeline : [];
-      return {
-        run_id: runId,
-        failures: rows
-          .filter((t) => String(t.status ?? "").toLowerCase() === "failed")
-          .map((t) => ({
-            test_id: String(t.testId ?? t.id ?? ""),
-            test_name: String(t.title ?? t.name ?? ""),
-            suite: String(t.suite ?? ""),
-            error_type: String((t.error as Record<string, unknown> | undefined)?.type ?? "Error"),
-            error_message: String((t.error as Record<string, unknown> | undefined)?.message ?? ""),
-            stack_trace: String((t.error as Record<string, unknown> | undefined)?.stack ?? ""),
-            duration_ms: Number(t.durationMs ?? 0),
-            retry_count: Number(t.retry ?? 0),
-            video_url: "",
-            video_timestamp_ms: 0,
-            screenshot_url: "",
-          })),
-      };
+      // A timed-out test is a failure the caller cares about, and the platform
+      // normalizes Playwright's `timedOut` to `timedout` — filtering on "failed"
+      // alone silently dropped them.
+      const FAILED = new Set(["failed", "timedout"]);
+      const failures = rows
+        .filter((t) => FAILED.has(String(t.status ?? "").toLowerCase()))
+        .map((t) => toFailure(t));
+      return { run_id: runId, failures: dedupeFailuresByTest(failures) };
     },
     async getFlakyTests(p: { project_id?: string; days?: number; threshold?: number }): Promise<{
       data: FlakyTest[];
