@@ -4,7 +4,7 @@ import { getLogger } from "../logger.js";
 import type { ResolvedConfig } from "../config.js";
 import { BlobLayer } from "./blob.js";
 import { DiffReader } from "./diff-reader.js";
-import { cacheKey } from "./key.js";
+import { cacheKey, keyBelongsTo, ANONYMOUS_IDENTITY } from "./key.js";
 import { LruLayer } from "./lru.js";
 import { SqliteLayer } from "./sqlite.js";
 import { VectorStore } from "./vector.js";
@@ -76,11 +76,51 @@ export class CacheManager {
     await this.vector.init();
   }
 
+  /**
+   * The identity every key minted through this manager is namespaced by.
+   *
+   * Defaults to a single shared value, which is correct for a local
+   * single-tenant server. `forIdentity()` returns a view bound to a caller so
+   * a hosted, multi-caller server cannot serve one org's cached output to
+   * another.
+   */
+  private identity: string = ANONYMOUS_IDENTITY;
+
+  /**
+   * A view of this cache bound to one caller.
+   *
+   * Deliberately shares the underlying layers rather than allocating new ones
+   * — L2 is a SQLite file and L4 is a blob store on disk, so per-session
+   * copies would multiply disk and defeat the point of caching. Only the KEY
+   * namespace and the ownership check differ, which is exactly the part that
+   * has to be per-identity.
+   */
+  public forIdentity(identity: string): CacheManager {
+    const view: CacheManager = Object.create(this);
+    view.identity = identity;
+    return view;
+  }
+
   public key(tool: string, input: unknown, schemaVersion = "v1"): string {
-    return cacheKey(tool, input, schemaVersion);
+    return cacheKey(tool, input, schemaVersion, this.identity);
+  }
+
+  /**
+   * True when a caller-supplied key was minted by THIS identity.
+   *
+   * `tr_fetch_cached` and the `testrelic://cache/{key}` resource both redeem
+   * an arbitrary string from the model. Without this they are a direct read
+   * primitive into whatever another caller happened to cache under a key that
+   * leaked; with it, a foreign key is refused rather than merely unlikely.
+   */
+  public ownsKey(key: string): boolean {
+    return keyBelongsTo(key, this.identity);
   }
 
   public get<T>(key: string): CacheLookup<T> | undefined {
+    // Refuse another identity's key outright. A miss here is the correct
+    // answer for a caller asking after somebody else's entry.
+    if (!this.ownsKey(key)) return undefined;
     const l1 = this.lru.get<T>(key);
     if (l1 !== undefined) {
       this.stats.l1Hits++;
@@ -126,7 +166,7 @@ export class CacheManager {
   }
 }
 
-export { cacheKey, simHash } from "./key.js";
+export { cacheKey, simHash, keyBelongsTo, identityPrefix, ANONYMOUS_IDENTITY } from "./key.js";
 export { LruLayer } from "./lru.js";
 export { SqliteLayer } from "./sqlite.js";
 export { VectorStore } from "./vector.js";
