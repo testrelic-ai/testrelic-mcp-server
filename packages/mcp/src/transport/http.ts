@@ -51,6 +51,12 @@ export function isLoopbackHost(host: string): boolean {
  * only knew the bind address, so the protection took the whole hosted
  * endpoint down rather than protecting it. Public entries are added both bare
  * (proxies at :443/:80 forward `Host: name` with no port) and with our port.
+ *
+ * Origin is handled differently from Host: it is enforced only for a local
+ * loopback server. A hosted deployment returns an EMPTY `allowedOrigins`,
+ * which the SDK treats as "do not validate Origin". See the comment at the
+ * return site for why an origin allow-list is unimplementable for a hosted
+ * MCP endpoint.
  */
 export function buildAllowList(
   host: string,
@@ -73,6 +79,24 @@ export function buildAllowList(
     hosts.add(h);
     hosts.add(toHostHeader(h, port));
   }
+  // Origin is a *browser* control and cannot be allow-listed for a hosted
+  // endpoint. Real MCP clients send origins we can never enumerate --
+  // `https://claude.ai`, `vscode-webview://<random>`, `app://...`, or the
+  // literal `null` from an Electron shell -- while this list can only ever
+  // contain our own hostnames, because it is derived from them. Enforcing it
+  // 403'd every real client with "Invalid Origin header" while a bare curl
+  // (which sends no Origin header at all) sailed through, so the endpoint
+  // looked healthy from every probe we ran.
+  //
+  // This is the Origin half of the bug #42/#43 fixed for Host. The SDK skips
+  // Origin validation entirely when this list is empty, and still enforces
+  // `allowedHosts` -- the control that actually stops DNS rebinding. For a
+  // hosted server, authentication rather than Origin is the gate.
+  const hosted = publicHosts.some((h) => h.trim() !== "") || !isLoopbackHost(host);
+  if (hosted) return { allowedHosts: [...hosts], allowedOrigins: [] };
+
+  // Loopback/local HTTP keeps the Origin allow-list: a malicious web page can
+  // reach 127.0.0.1, which is the case this protection was written for.
   const origins = new Set<string>();
   for (const h of hosts) {
     origins.add(`http://${h}`);
@@ -95,7 +119,17 @@ export async function startHttp(
   // of Host/Origin values so a malicious web page cannot drive this server via
   // the user's browser.
   const { allowedHosts, allowedOrigins } = buildAllowList(host, port, config.server.publicHosts);
-  getLogger().info({ allowedHosts }, "http transport Host allow-list");
+  // Log the Origin policy too. This previously logged only `allowedHosts`, so a
+  // deployment that was 403-ing every client on Origin looked identical in the
+  // logs to a healthy one.
+  getLogger().info(
+    {
+      allowedHosts,
+      originPolicy: allowedOrigins.length === 0 ? "not-enforced (hosted)" : "allow-list (local)",
+      allowedOrigins,
+    },
+    "http transport Host/Origin allow-list",
+  );
 
   if (!isLoopbackHost(host)) {
     getLogger().warn(
