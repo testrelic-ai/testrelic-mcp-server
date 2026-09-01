@@ -1,7 +1,7 @@
 import express, { type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { getLogger } from "../logger.js";
 import type { ResolvedConfig } from "../config.js";
 import { version } from "../version.js";
@@ -143,10 +143,80 @@ export async function startHttp(
     res.json({ ok: true, version, transport: "http", capabilities: config.capabilities });
   });
 
+  /**
+   * Caller authentication for `/mcp`.
+   *
+   * Until this existed a hosted deployment ran tool calls for ANYONE who could
+   * reach it: the transport read only `mcp-session-id` and never looked at
+   * `Authorization`, while every session used the container's own PAT. So an
+   * anonymous request off the public internet executed as the owning org.
+   * Verified against production 2026-09-01 — an unauthenticated `tools/call`
+   * returned the org's repository list.
+   *
+   * The gate compares against the server's OWN configured token, which makes
+   * it a shared secret rather than per-caller identity: every session still
+   * acts as the one configured identity, exactly as before. Using the caller's
+   * own PAT for upstream calls is the real fix and is deliberately not
+   * attempted here — it changes the product's tenancy model and deserves its
+   * own change.
+   *
+   * `/healthz` stays open on purpose: the load balancer probes it and it
+   * reveals only a version string.
+   */
+  const expectedToken = config.cloud.token;
+  const requireAuth = config.server.requireAuth;
+
+  if (requireAuth && !expectedToken) {
+    // Fail closed, loudly. A reachable server that demands auth but has no
+    // token to compare against can never authorise anyone, and serving
+    // everyone instead would be the very bug this guard exists to prevent.
+    throw new Error(
+      "http transport: server.requireAuth is on but no cloud token is configured — " +
+        "set TESTRELIC_MCP_TOKEN, or set TESTRELIC_MCP_REQUIRE_AUTH=false only if an " +
+        "authenticating proxy sits in front of this server.",
+    );
+  }
+  if (!requireAuth && !isLoopbackHost(host)) {
+    getLogger().warn(
+      { host },
+      "http transport: caller authentication is DISABLED on a non-loopback bind — " +
+        "anyone who can reach this port can run tools as the configured identity.",
+    );
+  }
+
+  /** Constant-time compare, over digests so a length mismatch cannot throw
+   *  (and cannot leak the token's length either). */
+  const tokenMatches = (presented: string): boolean =>
+    timingSafeEqual(
+      createHash("sha256").update(presented).digest(),
+      createHash("sha256").update(expectedToken).digest(),
+    );
+
+  const authorize = (req: Request, res: Response): boolean => {
+    if (!requireAuth) return true;
+    const header = req.header("authorization") ?? "";
+    const presented = /^Bearer\s+(.+)$/i.exec(header.trim())?.[1]?.trim();
+    if (presented && tokenMatches(presented)) return true;
+    getLogger().warn(
+      { hasHeader: Boolean(header) },
+      "http transport: rejected an unauthenticated /mcp request",
+    );
+    res.setHeader("WWW-Authenticate", 'Bearer realm="testrelic-mcp"');
+    res.status(401).json({
+      error: {
+        code: "UNAUTHORIZED",
+        message:
+          "This MCP server requires a credential. Send Authorization: Bearer <TESTRELIC_MCP_TOKEN>.",
+      },
+    });
+    return false;
+  };
+
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
 
   app.post("/mcp", async (req: Request, res: Response) => {
+    if (!authorize(req, res)) return;
     const sessionHeader = req.header("mcp-session-id");
     let transport = sessionHeader ? transports.get(sessionHeader) : undefined;
 
@@ -181,6 +251,7 @@ export async function startHttp(
   });
 
   app.get("/mcp", async (req: Request, res: Response) => {
+    if (!authorize(req, res)) return;
     const sessionHeader = req.header("mcp-session-id");
     const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
     if (!transport) {
@@ -191,6 +262,7 @@ export async function startHttp(
   });
 
   app.delete("/mcp", async (req: Request, res: Response) => {
+    if (!authorize(req, res)) return;
     const sessionHeader = req.header("mcp-session-id");
     const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
     if (!transport) {
