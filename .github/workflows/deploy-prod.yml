@@ -125,10 +125,49 @@ jobs:
             --task-definition "${{ steps.register-task.outputs.task-def-arn }}"
 
       - name: Wait for stable deployment
+        # A bare `wait services-stable` fails as
+        # "Waiter ServicesStable failed: Max attempts exceeded" and says NOTHING
+        # about why — which is exactly what happened on 2026-09-01, when
+        # mcp.testrelic.ai was 502 on every path and the redeploy timed out
+        # opaquely after ten minutes. The two causes need completely different
+        # fixes and that log cannot tell them apart: tasks that cannot be
+        # PLACED (this service shares the memory-constrained `testrelic-prod`
+        # cluster with cloud-platform-app) versus tasks that place and then
+        # CRASH. So on failure, dump what distinguishes them. Mirrors the block
+        # in cloud-platform-app's deploy-prod.yml, which grew for the same
+        # reason.
         run: |
-          aws ecs wait services-stable \
-            --cluster "${{ env.ECS_CLUSTER_NAME }}" \
-            --services "${{ env.ECS_SERVICE_NAME }}"
+          set -euo pipefail
+          CLUSTER="${ECS_CLUSTER_NAME}"
+          SERVICE="${ECS_SERVICE_NAME}"
+          if aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"; then
+            echo "ECS service is stable."
+            exit 0
+          fi
+          echo "::error::ECS waiter timed out — new tasks did not stabilize (diagnostics below)."
+          set +e
+          aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].{runningCount:runningCount,desiredCount:desiredCount,pendingCount:pendingCount,deployments:deployments}' \
+            --output json
+          echo "--- Recent service events ---"
+          aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].events[:15]' --output table
+          EVENTS_JSON=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].events[:15]' --output json)
+          if echo "$EVENTS_JSON" | grep -qi 'insufficient memory'; then
+            echo "::notice::ECS could not PLACE tasks: container instances report insufficient free memory. This service shares the ${CLUSTER} cluster with cloud-platform-app, so a platform deploy can consume the headroom. Fix in AWS: add EC2/ASG capacity, drain or stop other tasks on the same instances, or reduce this service's memory reservation, then re-run."
+          fi
+          echo "--- Recent STOPPED tasks (why the container died, if it started) ---"
+          TASK_ARNS=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" \
+            --desired-status STOPPED --query 'taskArns[:8]' --output text)
+          if [ -n "$TASK_ARNS" ] && [ "$TASK_ARNS" != "None" ]; then
+            aws ecs describe-tasks --cluster "$CLUSTER" --tasks $TASK_ARNS \
+              --query 'tasks[*].{stopCode:stopCode,stoppedReason:stoppedReason,containers:containers[*].{name:name,reason:reason,exitCode:exitCode}}' \
+              --output json
+          else
+            echo "(no stopped tasks in this window — if runningCount is 0 and pendingCount is 0, this is a PLACEMENT failure, not a crash)"
+          fi
+          exit 1
 
       - name: Health check
         # Retry for up to 3 minutes (12 × 15 s). Gives nginx time to register
