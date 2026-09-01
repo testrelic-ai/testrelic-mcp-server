@@ -107,7 +107,7 @@ export function buildAllowList(
 }
 
 export async function startHttp(
-  buildServer: () => McpServer,
+  buildServer: (sessionToken?: string) => Promise<McpServer>,
   config: ResolvedConfig,
 ): Promise<() => Promise<void>> {
   const app = express();
@@ -166,8 +166,12 @@ export async function startHttp(
    */
   const expectedToken = config.cloud.token;
   const requireAuth = config.server.requireAuth;
+  const multiTenant = config.server.multiTenant;
 
-  if (requireAuth && !expectedToken) {
+  // In multi-tenant mode the server holds no shared secret to compare against
+  // — the platform validates each caller's PAT — so the "auth on but no token"
+  // guard below does not apply.
+  if (requireAuth && !multiTenant && !expectedToken) {
     // Fail closed, loudly. A reachable server that demands auth but has no
     // token to compare against can never authorise anyone, and serving
     // everyone instead would be the very bug this guard exists to prevent.
@@ -193,8 +197,13 @@ export async function startHttp(
       createHash("sha256").update(expectedToken).digest(),
     );
 
-  const authorize = (req: Request, res: Response): boolean => {
-    if (!requireAuth) return true;
+  /**
+   * Returns the token the caller presented, or null when the request is
+   * refused. It returns the TOKEN rather than a boolean because the session
+   * is built from it: the credential is the identity, not merely a pass.
+   */
+  const authorize = (req: Request, res: Response): string | null | undefined => {
+    if (!requireAuth) return undefined;
     const header = req.header("authorization") ?? "";
     // Parsed by index, NOT by regex. `/^Bearer\s+(.+)$/` backtracks
     // catastrophically on attacker-controlled input — CodeQL flagged it as
@@ -206,7 +215,13 @@ export async function startHttp(
       sep > 0 && header.slice(0, sep).toLowerCase() === "bearer"
         ? header.slice(sep + 1).trim()
         : undefined;
-    if (presented && tokenMatches(presented)) return true;
+    // Multi-tenant: ANY well-formed PAT is accepted here and validated for
+    // real by the platform when the session bootstraps (a bad one 401s there).
+    // Deliberately not a local guess at what a valid token is — the server
+    // does not own that answer, and a shape check that is stricter than the
+    // platform's would reject credentials the platform considers fine.
+    if (presented && multiTenant && presented.startsWith("tr_mcp_")) return presented;
+    if (presented && !multiTenant && tokenMatches(presented)) return presented;
     getLogger().warn(
       { hasHeader: Boolean(header) },
       "http transport: rejected an unauthenticated /mcp request",
@@ -219,7 +234,7 @@ export async function startHttp(
           "This MCP server requires a credential. Send Authorization: Bearer <TESTRELIC_MCP_TOKEN>.",
       },
     });
-    return false;
+    return null;
   };
 
   /**
@@ -250,15 +265,72 @@ export async function startHttp(
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
+  /**
+   * Which identity opened each session.
+   *
+   * A session id is a routing handle, not a credential — but the server it
+   * routes to is already connected and already bound to ONE caller's token.
+   * So once sessions carry different identities, accepting a request purely
+   * because its `mcp-session-id` matches would let anyone who learns that id
+   * act as the session's owner. Every request is therefore checked against
+   * the identity that opened the session, not just against the id.
+   */
+  const sessionOwner = new Map<string, string>();
+  const ownerId = (token: string | null | undefined): string =>
+    createHash("sha256").update(token ?? "").digest("hex").slice(0, 32);
+
+  /**
+   * Look up a session, refusing one that belongs to somebody else.
+   * Returns `undefined` for "no such session" so the caller keeps its own
+   * status code, and sends 403 itself when the session exists but is not
+   * yours — those are different answers and must not be conflated.
+   */
+  const sessionFor = (
+    req: Request,
+    res: Response,
+    token: string | null | undefined,
+  ): StreamableHTTPServerTransport | undefined => {
+    const id = req.header("mcp-session-id");
+    if (!id) return undefined;
+    const transport = transports.get(id);
+    if (!transport) return undefined;
+    const owner = sessionOwner.get(id);
+    if (requireAuth && owner !== undefined && owner !== ownerId(token)) {
+      getLogger().warn({ sessionId: id }, "http transport: session id presented by a different identity");
+      res.status(403).json({
+        error: { code: "FORBIDDEN", message: "This session belongs to a different credential." },
+      });
+      return undefined;
+    }
+    return transport;
+  };
 
   app.post("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    if (!authorize(req, res)) return;
-    const sessionHeader = req.header("mcp-session-id");
-    let transport = sessionHeader ? transports.get(sessionHeader) : undefined;
+    const sessionToken = authorize(req, res);
+    if (sessionToken === null) return;
+    if (res.headersSent) return;
+    let transport = sessionFor(req, res, sessionToken);
+    if (res.headersSent) return;
 
     if (!transport) {
       const newSessionId = randomUUID();
-      const sessionServer = buildServer();
+      // Built from the CALLER's token: the session talks upstream as them.
+      // This also authenticates — buildServer bootstraps against the platform,
+      // which 401s a bad PAT, so a session only exists for a real credential.
+      let sessionServer: McpServer;
+      try {
+        sessionServer = await buildServer(sessionToken);
+      } catch (err) {
+        getLogger().warn({ err: (err as Error).message }, "http transport: session build failed");
+        res.status(401).json({
+          error: {
+            code: "UNAUTHORIZED",
+            message: "The supplied credential was rejected by TestRelic Cloud.",
+          },
+        });
+        return;
+      }
+      sessionOwner.set(newSessionId, ownerId(sessionToken));
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => newSessionId,
         enableDnsRebindingProtection: true,
@@ -270,6 +342,7 @@ export async function startHttp(
         },
         onsessionclosed: (id: string) => {
           transports.delete(id);
+          sessionOwner.delete(id);
           const s = servers.get(id);
           servers.delete(id);
           if (s) void s.close().catch(() => undefined);
@@ -287,9 +360,10 @@ export async function startHttp(
   });
 
   app.get("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    if (!authorize(req, res)) return;
-    const sessionHeader = req.header("mcp-session-id");
-    const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
+    const sessionToken = authorize(req, res);
+    if (sessionToken === null) return;
+    const transport = sessionFor(req, res, sessionToken);
+    if (res.headersSent) return;
     if (!transport) {
       res.status(400).json({ error: "missing or invalid mcp-session-id" });
       return;
@@ -298,15 +372,18 @@ export async function startHttp(
   });
 
   app.delete("/mcp", mcpLimiter, async (req: Request, res: Response) => {
-    if (!authorize(req, res)) return;
+    const sessionToken = authorize(req, res);
+    if (sessionToken === null) return;
     const sessionHeader = req.header("mcp-session-id");
-    const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
+    const transport = sessionFor(req, res, sessionToken);
+    if (res.headersSent) return;
     if (!transport) {
       res.status(404).json({ error: "session not found" });
       return;
     }
     await transport.close();
     transports.delete(sessionHeader!);
+    sessionOwner.delete(sessionHeader!);
     const s = servers.get(sessionHeader!);
     servers.delete(sessionHeader!);
     if (s) await s.close().catch(() => undefined);

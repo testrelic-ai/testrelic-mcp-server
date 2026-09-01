@@ -41,7 +41,12 @@ export class CacheManager {
   public readonly sqlite: SqliteLayer;
   public readonly vector: VectorStore;
   public readonly blob: BlobLayer;
-  public readonly diff = new DiffReader();
+  // NOT readonly: an identity-scoped view replaces it with its own instance
+  // (see forIdentity). DiffReader keys snapshots by a caller-supplied string
+  // and holds the previous CONTENT to diff against, so a shared one would
+  // answer "unchanged" — or return a diff embedding another caller's report
+  // body — across identities.
+  public diff = new DiffReader();
   public readonly stats: CacheStats = {
     l1Hits: 0,
     l1Misses: 0,
@@ -98,6 +103,11 @@ export class CacheManager {
   public forIdentity(identity: string): CacheManager {
     const view: CacheManager = Object.create(this);
     view.identity = identity;
+    // Its own snapshot store. This one is per-identity rather than shared,
+    // because DiffReader is keyed by a caller-supplied resource id and holds
+    // the previous content — sharing it lets one session be told "unchanged"
+    // about another session's report, or handed a diff against its body.
+    view.diff = new DiffReader();
     return view;
   }
 

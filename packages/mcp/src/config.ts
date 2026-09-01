@@ -122,6 +122,26 @@ export const ServerConfigSchema = z
      * Env: TESTRELIC_MCP_REQUIRE_AUTH ("true"/"false" forces either way).
      */
     requireAuth: z.boolean().optional(),
+    /**
+     * Accept ANY valid TestRelic PAT and act as its owner, instead of only the
+     * server's own token.
+     *
+     * Off by default, which keeps a server single-tenant: one configured
+     * identity, and `requireAuth` is a shared-secret gate in front of it.
+     *
+     * On, the gate stops being a string compare — the credential IS the
+     * identity. A session is built from the caller's token and authenticated
+     * by the platform itself (bootstrap answers 401 for a bad PAT), so the
+     * server never has to decide what a valid token looks like.
+     *
+     * Turning this on REQUIRES that every per-identity surface is already
+     * separated — cache keys, context engine, bootstrap, diff snapshots and
+     * session ownership. They are, as of this change; enabling it before that
+     * would have served one org's data to another.
+     *
+     * Env: TESTRELIC_MCP_MULTI_TENANT.
+     */
+    multiTenant: z.boolean().optional(),
   })
   .strict();
 
@@ -184,6 +204,7 @@ export interface ResolvedConfig {
     port: number;
     publicHosts: string[];
     requireAuth: boolean;
+    multiTenant: boolean;
   };
   capabilities: Capability[];
   timeouts: Required<TimeoutConfig>;
@@ -313,6 +334,9 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
       // opt out — but "I forgot to configure it" must never be the insecure
       // case, which is exactly how production ended up open.
       requireAuth: parsed.server?.requireAuth ?? !isLoopbackHostname(parsed.server?.host ?? "127.0.0.1"),
+      // Off unless asked for: making a server multi-tenant changes who its
+      // data belongs to, which is never a safe default to infer.
+      multiTenant: parsed.server?.multiTenant ?? false,
     },
     // stderr, never stdout — stdout carries the MCP handshake. Not the pino
     // logger: it is configured from this very function, so importing it here
@@ -372,6 +396,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     const v = env.TESTRELIC_MCP_REQUIRE_AUTH.trim().toLowerCase();
     if (v === "true" || v === "1") c.server = { ...c.server, requireAuth: true };
     else if (v === "false" || v === "0") c.server = { ...c.server, requireAuth: false };
+  }
+  if (env.TESTRELIC_MCP_MULTI_TENANT) {
+    const v = env.TESTRELIC_MCP_MULTI_TENANT.trim().toLowerCase();
+    if (v === "true" || v === "1") c.server = { ...c.server, multiTenant: true };
+    else if (v === "false" || v === "0") c.server = { ...c.server, multiTenant: false };
   }
   if (env.TESTRELIC_MCP_OUTPUT_DIR) c.outputDir = env.TESTRELIC_MCP_OUTPUT_DIR;
   if (env.TESTRELIC_MCP_CACHE_DIR) c.cacheDir = env.TESTRELIC_MCP_CACHE_DIR;
