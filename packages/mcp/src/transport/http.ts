@@ -1,4 +1,5 @@
 import express, { type Request, type Response } from "express";
+import rateLimit from "express-rate-limit";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
@@ -195,7 +196,16 @@ export async function startHttp(
   const authorize = (req: Request, res: Response): boolean => {
     if (!requireAuth) return true;
     const header = req.header("authorization") ?? "";
-    const presented = /^Bearer\s+(.+)$/i.exec(header.trim())?.[1]?.trim();
+    // Parsed by index, NOT by regex. `/^Bearer\s+(.+)$/` backtracks
+    // catastrophically on attacker-controlled input — CodeQL flagged it as
+    // polynomial ReDoS ("slow on strings starting with 'bearer ' and with many
+    // repetitions of ' '"), and an unauthenticated request is exactly where an
+    // attacker controls this string. This scan is linear and allocation-light.
+    const sep = header.indexOf(" ");
+    const presented =
+      sep > 0 && header.slice(0, sep).toLowerCase() === "bearer"
+        ? header.slice(sep + 1).trim()
+        : undefined;
     if (presented && tokenMatches(presented)) return true;
     getLogger().warn(
       { hasHeader: Boolean(header) },
@@ -212,10 +222,36 @@ export async function startHttp(
     return false;
   };
 
+  /**
+   * Rate limit on the authorizing routes.
+   *
+   * An endpoint that checks a credential and will answer as fast as you can
+   * ask is a guessing oracle, so the limiter goes on with the auth check
+   * rather than after it. The token is 64 hex characters, so brute force is
+   * not the realistic threat — flooding is, and this bounds it.
+   *
+   * ⚠ `trust proxy` is deliberately NOT enabled. Behind CloudFront → nginx
+   * the client IP arrives only in `X-Forwarded-For`, which a caller can spoof;
+   * trusting it would let an attacker mint a fresh bucket per request and
+   * evade the limit entirely. Untrusted, `req.ip` is the proxy, so this
+   * behaves as a near-global ceiling. That is the honest trade: a real
+   * per-client limit needs an authenticated identity, which is what the
+   * per-caller-PAT work would provide. The ceiling is set high enough that a
+   * legitimate MCP session — which makes many rapid tool calls — never sees
+   * it.
+   */
+  const mcpLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 600,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: { code: "RATE_LIMITED", message: "Too many requests." } },
+  });
+
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
 
-  app.post("/mcp", async (req: Request, res: Response) => {
+  app.post("/mcp", mcpLimiter, async (req: Request, res: Response) => {
     if (!authorize(req, res)) return;
     const sessionHeader = req.header("mcp-session-id");
     let transport = sessionHeader ? transports.get(sessionHeader) : undefined;
@@ -250,7 +286,7 @@ export async function startHttp(
     }
   });
 
-  app.get("/mcp", async (req: Request, res: Response) => {
+  app.get("/mcp", mcpLimiter, async (req: Request, res: Response) => {
     if (!authorize(req, res)) return;
     const sessionHeader = req.header("mcp-session-id");
     const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
@@ -261,7 +297,7 @@ export async function startHttp(
     await transport.handleRequest(req, res);
   });
 
-  app.delete("/mcp", async (req: Request, res: Response) => {
+  app.delete("/mcp", mcpLimiter, async (req: Request, res: Response) => {
     if (!authorize(req, res)) return;
     const sessionHeader = req.header("mcp-session-id");
     const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
