@@ -122,11 +122,19 @@ jobs:
           #
           # TESTRELIC_MCP_CAPS is injected the same way — see MCP_CAPS above for
           # why the default `core`-only surface is not good enough for stage.
+          #
+          # TESTRELIC_MCP_MULTI_TENANT must match prod. The auth gate turns
+          # `requireAuth` on by default for a non-loopback bind but leaves
+          # `multiTenant` OFF, and in single-tenant mode the gate compares the
+          # caller's bearer against the server's OWN token — a secret no client
+          # has. Stage exists to catch exactly that class of misconfiguration
+          # before prod, so it has to run the same shape.
           jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" --arg CAPS "${{ env.MCP_CAPS }}" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
              | .containerDefinitions[0].image = $IMAGE
              | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])
-             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])' \
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_MULTI_TENANT")) + [{"name": "TESTRELIC_MCP_MULTI_TENANT", "value": "true"}])' \
             /tmp/task-def.json > /tmp/task-def-updated.json
 
       - name: Register new task definition revision
