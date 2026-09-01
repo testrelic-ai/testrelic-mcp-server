@@ -122,11 +122,22 @@ jobs:
           #
           # TESTRELIC_MCP_CAPS is injected the same way — see MCP_CAPS above for
           # why the default `core`-only surface is not what prod should serve.
+          #
+          # TESTRELIC_MCP_MULTI_TENANT MUST be "true" here. The auth gate turns
+          # `requireAuth` on by default for a non-loopback bind but leaves
+          # `multiTenant` OFF, and in single-tenant mode the gate compares the
+          # caller's bearer against the server's OWN token. No customer has that
+          # secret, so shipping the gate without this flag 401s the entire fleet
+          # on the first deploy. With it, any well-formed tr_mcp_* PAT is
+          # accepted at the edge and validated for real when the session
+          # bootstraps against the platform — and each session gets its own
+          # clients/bootstrap/cache keyed to that caller.
           jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" --arg CAPS "${{ env.MCP_CAPS }}" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
              | .containerDefinitions[0].image = $IMAGE
              | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])
-             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])' \
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_MULTI_TENANT")) + [{"name": "TESTRELIC_MCP_MULTI_TENANT", "value": "true"}])' \
             /tmp/task-def.json > /tmp/task-def-updated.json
 
       - name: Register new task definition revision
