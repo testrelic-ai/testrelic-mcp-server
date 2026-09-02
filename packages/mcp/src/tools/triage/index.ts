@@ -8,6 +8,64 @@ import { RUN_FILTER_FRAMEWORKS } from "../frameworks.js";
  * alias under its old flat name so existing integrations keep working.
  */
 
+/**
+ * Declared output shapes.
+ *
+ * These describe what THIS PROCESS emits, not what the platform sends — the
+ * clients project upstream rows onto our own types first. That is the whole
+ * safety property: every field below is produced by a mapper we control
+ * (`toRun`, `toFailure`, `queryFlakinessScores`), each of which now defaults
+ * rather than forwards, so a drifted upstream degrades a VALUE and can never
+ * fail the schema.
+ *
+ * Why that matters: `validateToolOutput` rejects the entire result on a
+ * mismatch, and the registry's guard turns it into an OUTPUT_SCHEMA_VIOLATION
+ * error — the caller loses the diagnosis text along with everything else. A
+ * schema whose fields depend on an upstream we do not control would convert a
+ * degraded answer into no answer at all, which is the failure mode
+ * (TEAI-375 / TEAI-397) these schemas exist to prevent.
+ */
+const RUN_SHAPE = z.object({
+  run_id: z.string(),
+  project_id: z.string(),
+  framework: z.string(),
+  status: z.string(),
+  total: z.number(),
+  passed: z.number(),
+  failed: z.number(),
+  skipped: z.number(),
+  flaky: z.number(),
+  duration_ms: z.number(),
+  started_at: z.string(),
+  finished_at: z.string(),
+  branch: z.string(),
+  commit_sha: z.string(),
+  triggered_by: z.string(),
+});
+
+const FAILURE_SHAPE = z.object({
+  test_id: z.string(),
+  test_name: z.string(),
+  suite: z.string(),
+  error_type: z.string(),
+  error_message: z.string(),
+  stack_trace: z.string(),
+  duration_ms: z.number(),
+  retry_count: z.number(),
+  video_url: z.string(),
+  video_timestamp_ms: z.number(),
+  screenshot_url: z.string(),
+});
+
+const FLAKINESS_SHAPE = z.object({
+  test_id: z.string(),
+  test_name: z.string(),
+  flakiness_score: z.number(),
+  p90_duration_ms: z.number(),
+  run_count_7d: z.number(),
+  failure_count_7d: z.number(),
+});
+
 export const triageTools: ToolDefinition[] = [
   {
     name: "tr_diagnose_run",
@@ -18,6 +76,15 @@ export const triageTools: ToolDefinition[] = [
     inputSchema: {
       run_id: z.string(),
       include_video: z.boolean().optional().default(false),
+    },
+    // `run` is nullable (an unknown run id is a legitimate answer, not an
+    // error), and both arrays are always present — see the branch normalisation
+    // in the handler. Declaring this is only safe BECAUSE every branch emits the
+    // same three keys; a schema over branchy output is how a tool goes dark.
+    outputSchema: {
+      run: RUN_SHAPE.nullable(),
+      failures: z.array(FAILURE_SHAPE),
+      flakiness: z.array(FLAKINESS_SHAPE),
     },
     aliases: [{ name: "testrelic_diagnose_failure", description: "Diagnose a failing run." }],
     handler: async (input, ctx) => {
@@ -30,11 +97,18 @@ export const triageTools: ToolDefinition[] = [
         ctx.clients.testrelic.getRunFailures(run_id).catch(() => ({ run_id, failures: [] })),
         ctx.clients.clickhouse.queryFlakinessScores(run_id).catch(() => ({ data: [], rows: 0 })),
       ]);
+      // Every exit below emits the SAME three keys. They used to differ — the
+      // not-found branch omitted `flakiness` and the all-passed branch omitted
+      // both arrays — which is invisible without an outputSchema and an instant
+      // outage with one.
       if (!run) {
-        return { text: `Run ${run_id} not found.`, structured: { run: null, failures: [] } };
+        return { text: `Run ${run_id} not found.`, structured: { run: null, failures: [], flakiness: [] } };
       }
       if (run.status === "passed") {
-        return { text: `Run ${run_id} passed all ${run.total} tests in ${(run.duration_ms / 1000).toFixed(1)}s.`, structured: { run } };
+        return {
+          text: `Run ${run_id} passed all ${run.total} tests in ${(run.duration_ms / 1000).toFixed(1)}s.`,
+          structured: { run, failures: [], flakiness: [] },
+        };
       }
       const flakinessMap = new Map(flakinessData.data.map((f) => [f.test_id, f]));
       const failures = failureData?.failures ?? [];

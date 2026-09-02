@@ -243,6 +243,15 @@ export const coverageTools: ToolDefinition[] = [
     },
     handler: async (input, ctx) => {
       const cache_key = input.cache_key as string;
+      // Refuse a key minted by a different identity BEFORE looking it up.
+      // This tool redeems an arbitrary string from the model, and keys travel
+      // on purpose (every truncated result hands one back), so "you could not
+      // guess it" is not a boundary. `ctx.cache.get` enforces this too; the
+      // explicit check exists so the caller gets an honest message rather
+      // than a puzzling miss.
+      if (!ctx.cache.ownsKey(cache_key)) {
+        return { text: `Cache key ${cache_key} was not issued to this session.`, structured: {} };
+      }
       const hit = ctx.cache.get<{ blob?: string } | Record<string, unknown>>(cache_key);
       if (!hit) return { text: `No cached value for key ${cache_key}.`, structured: {} };
       const value = hit.value as { blob?: string } & Record<string, unknown>;

@@ -121,7 +121,7 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
   // object (throws on the second `connect`), so Streamable HTTP needs a
   // fresh server + registrations per session. The singleton above is only
   // for stdio and as the ctx anchor for non-server-bound helpers.
-  function buildSessionServer(): McpServer {
+  async function buildSessionServer(sessionToken?: string): Promise<McpServer> {
     const sessionServer = new McpServer(
       { name, version },
       {
@@ -130,16 +130,68 @@ export async function createServer(inputConfig: Config = {}): Promise<TestRelicS
           "TestRelic MCP — intelligent testing context for creation, healing, coverage, and impact. Start with `tr_list_repos` or `tr_coverage_report` to orient; capabilities are gated by the --caps flag to keep the tool schema small.",
       },
     );
+
+    // ── Per-caller identity ────────────────────────────────────────────────
+    // Without a session token this is the single-tenant server it has always
+    // been: the process config, the process clients, the process bootstrap.
+    // WITH one, every piece of per-identity state has to be rebuilt, because
+    // sharing any of them silently defeats the whole point:
+    //
+    //  - `clients` bakes the Authorization header into an axios instance at
+    //    construction, so a shared bundle would keep calling upstream as the
+    //    OPERATOR no matter who asked;
+    //  - `context` (JourneyGraph/CoverageMap/CodeMap/SignalMap) holds its own
+    //    reference to `clients`, so a shared engine bypasses the new identity
+    //    entirely for every tool that goes through it;
+    //  - `bootstrap` is the authenticated user/org/repo summary, and
+    //    `tr_list_repos` serves it with NO upstream call — a shared one hands
+    //    the operator's repo list to every caller, which is exactly the bug
+    //    this change exists to remove;
+    //  - `cache` keys must be namespaced per identity or one org's cached
+    //    tool output is served to another, and L2 is on disk so it outlives
+    //    the process.
+    const perCaller = Boolean(sessionToken);
+    const sessionConfig: ResolvedConfig = perCaller
+      ? {
+          ...config,
+          cloud: {
+            ...config.cloud,
+            token: sessionToken as string,
+            // The operator's default repo must not apply to someone else's
+            // session: resolveProjectId() prefers it over the caller's own
+            // repo list, so it would silently redirect their calls.
+            defaultRepoId: undefined,
+          },
+        }
+      : config;
+    const sessionClients = perCaller ? buildClients(sessionConfig) : clients;
+    const sessionCache = perCaller ? cache.forIdentity(sessionToken as string) : cache;
+    const sessionContext = perCaller
+      ? buildContextEngine(sessionClients, sessionCache)
+      : context;
+
+    // The caller's own bootstrap. This is also the authentication: the
+    // platform answers 401 for a bad PAT, so a session that gets here has
+    // demonstrably valid credentials rather than merely a matching string.
+    let sessionBootstrap = bootstrap;
+    if (perCaller) {
+      sessionBootstrap = await sessionClients.cloud.bootstrap();
+      getLogger().info(
+        { org: sessionBootstrap.organization.id, repos: sessionBootstrap.repos.length },
+        "mcp session bootstrap ok (per-caller identity)",
+      );
+    }
+
     const sessionRegistry = new ToolRegistry();
     const sessionCtx: ToolContext = {
       server: sessionServer,
-      config,
-      clients,
-      context,
-      cache,
+      config: sessionConfig,
+      clients: sessionClients,
+      context: sessionContext,
+      cache: sessionCache,
       sampling: new SamplingBridge(sessionServer),
       elicit: new Elicitor(sessionServer),
-      bootstrap,
+      bootstrap: sessionBootstrap,
     };
     registerAllTools(sessionCtx, sessionRegistry);
     registerResources(sessionServer, sessionCtx);
