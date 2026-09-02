@@ -103,6 +103,45 @@ export const ServerConfigSchema = z
      * "Invalid Host header". Env: TESTRELIC_MCP_PUBLIC_HOSTS (comma-separated).
      */
     publicHosts: z.array(z.string()).optional(),
+    /**
+     * Require callers of `POST /mcp` to present the server's token as
+     * `Authorization: Bearer <token>`.
+     *
+     * Defaults to TRUE whenever the server is bound to a non-loopback host,
+     * because that is the configuration reachable from the internet. Before
+     * this existed a hosted deployment executed tool calls for ANYONE who
+     * could reach it, using the container's own PAT — i.e. as the owning org —
+     * with no credential of any kind. Verified against production on
+     * 2026-09-01: an unauthenticated `tools/call` returned the org's repos.
+     *
+     * This is a GATE, not multi-tenancy: every session still acts as the one
+     * identity the server is configured with. Per-caller identity (using the
+     * caller's own PAT for upstream calls) is the deeper fix, tracked
+     * separately.
+     *
+     * Env: TESTRELIC_MCP_REQUIRE_AUTH ("true"/"false" forces either way).
+     */
+    requireAuth: z.boolean().optional(),
+    /**
+     * Accept ANY valid TestRelic PAT and act as its owner, instead of only the
+     * server's own token.
+     *
+     * Off by default, which keeps a server single-tenant: one configured
+     * identity, and `requireAuth` is a shared-secret gate in front of it.
+     *
+     * On, the gate stops being a string compare — the credential IS the
+     * identity. A session is built from the caller's token and authenticated
+     * by the platform itself (bootstrap answers 401 for a bad PAT), so the
+     * server never has to decide what a valid token looks like.
+     *
+     * Turning this on REQUIRES that every per-identity surface is already
+     * separated — cache keys, context engine, bootstrap, diff snapshots and
+     * session ownership. They are, as of this change; enabling it before that
+     * would have served one org's data to another.
+     *
+     * Env: TESTRELIC_MCP_MULTI_TENANT.
+     */
+    multiTenant: z.boolean().optional(),
   })
   .strict();
 
@@ -161,7 +200,12 @@ export type CloudConfig = z.infer<typeof CloudConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 export interface ResolvedConfig {
-  server: Required<Omit<ServerConfig, "publicHosts">> & { port: number; publicHosts: string[] };
+  server: Required<Omit<ServerConfig, "publicHosts" | "requireAuth">> & {
+    port: number;
+    publicHosts: string[];
+    requireAuth: boolean;
+    multiTenant: boolean;
+  };
   capabilities: Capability[];
   timeouts: Required<TimeoutConfig>;
   outputDir: string;
@@ -183,6 +227,17 @@ export interface ResolvedConfig {
 
 const DEFAULT_CLOUD_URL = "https://platform.testrelic.ai/api/v1";
 const TOKEN_FILE = join(homedir(), ".testrelic", "token");
+
+/**
+ * True for loopback bind addresses. Deliberately duplicated here rather than
+ * imported from `transport/http.ts` — config must not depend on a transport,
+ * and this decides a security default, so it should not be reachable through
+ * an import cycle. `transport/http.ts` keeps its own copy for allow-listing.
+ */
+function isLoopbackHostname(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "localhost" || h === "::1" || h.startsWith("127.");
+}
 
 /**
  * Read the token from ~/.testrelic/token if it exists. Silently returns
@@ -274,6 +329,14 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
       host: parsed.server?.host ?? "127.0.0.1",
       transport,
       publicHosts: parsed.server?.publicHosts ?? [],
+      // Fail CLOSED on anything reachable off this machine. An explicit
+      // setting always wins, so a local proxy that already authenticates can
+      // opt out — but "I forgot to configure it" must never be the insecure
+      // case, which is exactly how production ended up open.
+      requireAuth: parsed.server?.requireAuth ?? !isLoopbackHostname(parsed.server?.host ?? "127.0.0.1"),
+      // Off unless asked for: making a server multi-tenant changes who its
+      // data belongs to, which is never a safe default to infer.
+      multiTenant: parsed.server?.multiTenant ?? false,
     },
     // stderr, never stdout — stdout carries the MCP handshake. Not the pino
     // logger: it is configured from this very function, so importing it here
@@ -326,6 +389,18 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
         .map((s) => s.trim())
         .filter(Boolean),
     };
+  }
+  if (env.TESTRELIC_MCP_REQUIRE_AUTH) {
+    // Explicit only. An unset variable must NOT read as "false" — the default
+    // is computed from the bind address so the reachable case fails closed.
+    const v = env.TESTRELIC_MCP_REQUIRE_AUTH.trim().toLowerCase();
+    if (v === "true" || v === "1") c.server = { ...c.server, requireAuth: true };
+    else if (v === "false" || v === "0") c.server = { ...c.server, requireAuth: false };
+  }
+  if (env.TESTRELIC_MCP_MULTI_TENANT) {
+    const v = env.TESTRELIC_MCP_MULTI_TENANT.trim().toLowerCase();
+    if (v === "true" || v === "1") c.server = { ...c.server, multiTenant: true };
+    else if (v === "false" || v === "0") c.server = { ...c.server, multiTenant: false };
   }
   if (env.TESTRELIC_MCP_OUTPUT_DIR) c.outputDir = env.TESTRELIC_MCP_OUTPUT_DIR;
   if (env.TESTRELIC_MCP_CACHE_DIR) c.cacheDir = env.TESTRELIC_MCP_CACHE_DIR;
