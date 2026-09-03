@@ -53,6 +53,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           # The implant reached `main` in e94a26e, a commit whose subject was
           # "Merge pull request #69 from ..." but which had exactly ONE parent.
@@ -62,10 +63,35 @@ jobs:
           # and passed review unseen.
           #
           # This is the cheapest possible check for that trick.
+
+          # Scope: only the commits this PR actually INTRODUCES, i.e. those not
+          # already reachable from the default branch.
+          #
+          # Without this exclusion the check is unsatisfiable for any PR that
+          # merges the default branch into another branch. PR #76 (aligning
+          # `stage` with `main`) made all 28 of main's commits newly reachable
+          # from `stage`, so the check re-flagged e94a26e -- immutable history,
+          # already on main, unfixable from a PR. It blocked a PR whose entire
+          # purpose was removing the payload.
+          #
+          # This does not weaken the gate for PRs INTO the default branch: there
+          # the new commits are by definition not yet on it, so all of them are
+          # still inspected.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null || true
+
           FAILED=0
-          COMMITS=$(git rev-list "$BASE_SHA..$HEAD_SHA")
+          if git rev-parse -q --verify "refs/remotes/origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
+            COMMITS=$(git rev-list "$BASE_SHA..$HEAD_SHA" --not "refs/remotes/origin/${DEFAULT_BRANCH}")
+            SCOPE="$BASE_SHA..$HEAD_SHA (excluding commits already on ${DEFAULT_BRANCH})"
+          else
+            # Fail safe: if the default branch cannot be resolved, inspect
+            # everything rather than silently checking nothing.
+            COMMITS=$(git rev-list "$BASE_SHA..$HEAD_SHA")
+            SCOPE="$BASE_SHA..$HEAD_SHA (default branch unavailable - inspecting all)"
+          fi
           COUNT=$(echo "$COMMITS" | grep -c . || true)
-          echo "inspecting $COUNT commit(s) in $BASE_SHA..$HEAD_SHA"
+          echo "inspecting $COUNT commit(s) in $SCOPE"
 
           for c in $COMMITS; do
             SUBJECT=$(git log -1 --format=%s "$c")
