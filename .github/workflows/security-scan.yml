@@ -1,0 +1,52 @@
+name: Security — Injected Payload Scan
+
+# Runs on EVERY branch and EVERY pull request, deliberately.
+#
+# The 2026-08-27 payload reached this repo through a merge, and the control
+# added in response elsewhere could not gate a merge: it triggered only on
+# `push` to two branches, so no check ever appeared on a PR and branch
+# protection had nothing to require. A gate that runs after the merge is a
+# report, not a gate.
+#
+# This repo's existing ci.yml is scoped to `main` only — which is not where the
+# product lives — so the scan gets its own workflow rather than a job inside a
+# pipeline that never runs on `stage` or `prod`.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# Read-only, and no `id-token`. The infected `typecheck-gate.mjs` ran inside
+# deploy-stage.yml, which declares `id-token: write` — i.e. attacker code
+# executed in a job that could mint an AWS OIDC token. A scanner has no reason
+# to hold any credential, so it holds none.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan for injected payloads
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The scan uses `git grep`, which needs real history present, and a
+          # shallow clone is enough for that. It intentionally does NOT need
+          # credentials.
+          persist-credentials: false
+
+      # The scanner's own tests run FIRST. If the detector is broken, the
+      # correct outcome is a red build — not a green one produced by a scan
+      # that silently matched nothing. The original control failed open on
+      # exactly this class of breakage.
+      - name: Self-test the scanner
+        run: bash scripts/scan-injected-payload.test.sh
+
+      - name: Scan the tree
+        run: bash scripts/scan-injected-payload.sh
