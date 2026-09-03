@@ -149,9 +149,49 @@ describe("security: http DNS-rebinding allow-list (TEAI-280)", () => {
     expect(allowedHosts).toContain("mcp-stage.testrelic.ai"); // as nginx forwards it
     expect(allowedHosts).toContain("mcp-stage.testrelic.ai:3000");
     expect(allowedHosts).toContain("new.mcp-stage.testrelic.ai");
-    expect(allowedOrigins).toContain("https://mcp-stage.testrelic.ai");
+    // NOTE: this previously asserted `allowedOrigins` contained
+    // "https://mcp-stage.testrelic.ai". That assertion encoded the Origin bug
+    // below — a hosted deployment now enforces no Origin allow-list at all.
+    // Host coverage, which is what this case is about, is unchanged.
+    expect(allowedOrigins).toEqual([]);
     // The rebinding protection still rejects arbitrary names.
     expect(allowedHosts).not.toContain("evil.example.com");
+  });
+
+  /**
+   * The Origin half of the same bug, and the one that broke customers on
+   * 2026-09-01. `allowedOrigins` was derived from the Host allow-list, so it
+   * could only ever contain our own hostnames — while real MCP clients send
+   * `https://claude.ai`, `vscode-webview://<random>`, `app://...` or a literal
+   * `null`. Every one of them got 403 "Invalid Origin header", while a bare
+   * curl (no Origin header) succeeded, so every probe we ran looked healthy.
+   *
+   * The SDK skips Origin validation when the list is empty and still enforces
+   * allowedHosts, so rebinding protection is retained.
+   */
+  it("hosted deployments do not enforce an Origin allow-list", () => {
+    const { allowedHosts, allowedOrigins } = buildAllowList("0.0.0.0", 3000, [
+      "mcp.testrelic.ai",
+    ]);
+    expect(allowedOrigins).toEqual([]);
+    // Host protection is untouched — this is what actually stops rebinding.
+    expect(allowedHosts).toContain("mcp.testrelic.ai");
+    expect(allowedHosts).not.toContain("evil.example.com");
+  });
+
+  it("a non-loopback bind is treated as hosted even without publicHosts", () => {
+    expect(buildAllowList("0.0.0.0", 3000).allowedOrigins).toEqual([]);
+    expect(buildAllowList("10.0.1.7", 3000).allowedOrigins).toEqual([]);
+  });
+
+  it("loopback servers KEEP the Origin allow-list (a web page can reach 127.0.0.1)", () => {
+    for (const h of ["127.0.0.1", "localhost", "::1"]) {
+      const { allowedOrigins } = buildAllowList(h, 3000);
+      expect(allowedOrigins.length).toBeGreaterThan(0);
+      expect(allowedOrigins).toContain("http://127.0.0.1:3000");
+      // A hostile page's own origin is still not on the list.
+      expect(allowedOrigins).not.toContain("https://evil.example.com");
+    }
   });
 
   it("publicHosts defaults keep the strict local-only allow-list", () => {

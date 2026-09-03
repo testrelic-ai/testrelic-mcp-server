@@ -1,0 +1,86 @@
+name: Security Gate
+
+# A merge-blocking supply-chain check.
+#
+# Why this exists as a separate gate rather than trusting what was already here:
+# an obfuscated dropper sat in 7 tracked files of `main` for 11 days
+# (2026-08-21 -> 2026-09-02) and rode 10 open Dependabot PRs. CodeQL, the test
+# suite and the multi-arch docker build passed on every one of them. The
+# existing gates are not blind by accident -- they are looking for different
+# things -- but nothing was looking for this shape, so nothing found it.
+#
+# Two checks, both cheap, both structural:
+#   1. supply-chain  -- scan the tree for implant shape (see scripts/supply-chain-scan.sh)
+#   2. commit-provenance -- refuse a commit that claims to be a merge but isn't
+#
+# Make BOTH required in the branch ruleset for `main`, otherwise this is
+# decoration: a check that can be ignored did not gate anything.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    name: Supply-chain scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan tracked source for implant shape
+        run: bash scripts/supply-chain-scan.sh
+
+  commit-provenance:
+    name: Commit provenance
+    runs-on: ubuntu-latest
+    # Only meaningful for a PR, where there is a base..head range to inspect.
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need real history to read parents; the default shallow clone cannot.
+          fetch-depth: 0
+
+      - name: Refuse commits that impersonate a merge
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The implant reached `main` in e94a26e, a commit whose subject was
+          # "Merge pull request #69 from ..." but which had exactly ONE parent.
+          # GitHub does not produce that shape: a real merge has two parents, and
+          # a squash/rebase merge does not carry a "Merge pull request" subject.
+          # Because it presented as a merge, the payload appeared in NO PR diff
+          # and passed review unseen.
+          #
+          # This is the cheapest possible check for that trick.
+          FAILED=0
+          COMMITS=$(git rev-list "$BASE_SHA..$HEAD_SHA")
+          COUNT=$(echo "$COMMITS" | grep -c . || true)
+          echo "inspecting $COUNT commit(s) in $BASE_SHA..$HEAD_SHA"
+
+          for c in $COMMITS; do
+            SUBJECT=$(git log -1 --format=%s "$c")
+            NPARENTS=$(git log -1 --format=%P "$c" | wc -w)
+            case "$SUBJECT" in
+              "Merge pull request"*|"Merge branch"*|"Merge remote-tracking"*)
+                if [ "$NPARENTS" -ne 2 ]; then
+                  echo "::error::$c claims to be a merge (\"$SUBJECT\") but has $NPARENTS parent(s), not 2. This is how an implant reached main in e94a26e without appearing in any PR diff."
+                  FAILED=1
+                fi
+                ;;
+            esac
+          done
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "commit provenance: clean"
+          fi
+          exit "$FAILED"

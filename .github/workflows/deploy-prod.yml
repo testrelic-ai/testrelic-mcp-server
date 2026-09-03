@@ -17,13 +17,60 @@ env:
   ECS_SERVICE_NAME: ${{ vars.PROD_MCP_ECS_SERVICE }}
   ECS_TASK_FAMILY: ${{ vars.PROD_MCP_TASK_FAMILY }}
   INGRESS_HOST: ${{ vars.PROD_MCP_HOST }}
+  # Capabilities the hosted PROD server registers. Without this the container
+  # falls back to config.ts's `["core"]` default, and `ToolRegistry.register`
+  # silently skips every gated tool — prod was serving 7 tools while stage
+  # served 15, so tr_diagnose_run, tr_ai_rca, tr_suggest_fix, tr_create_jira and
+  # the rest simply did not exist for any hosted client. An unregistered tool is
+  # not an error the caller can see; it reads as "the tool does nothing".
+  # Mirrors MCP_CAPS in deploy-stage.yml. The remaining capabilities
+  # (ai, marketplace, apps, artifacts, memory) stay off by design.
+  MCP_CAPS: core,coverage,creation,healing,impact,triage,signals,devtools
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
-  # 0. Resolve environment
+  # 0a. Guard: which refs may deploy prod
+  # ───────────────────────────────────────────────────────────────────────
+  # `workflow_dispatch` is deliberately NOT restricted to main, because main's
+  # ruleset sets required_deployments: [prod] — a PR cannot merge until prod has
+  # been deployed from its branch. A blanket `github.ref == main` guard would
+  # therefore deadlock every merge.
+  #
+  # But unrestricted dispatch is how a stale branch reached prod: on 2026-09-01
+  # a run from `ops/deploy-prod-diagnostics` (based on a 2026-05-06 commit,
+  # dozens behind main) built that tree and repointed the prod service.
+  #
+  # The middle ground: allow main, or any branch with an OPEN PR into main.
+  # That keeps the pre-merge deploy flow working while refusing arbitrary,
+  # abandoned or stale branches.
+  guard-ref:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Only main, or a branch with an open PR into main, may deploy prod
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "ref is main — allowed"; exit 0
+          fi
+          OPEN=$(gh pr list --repo "${{ github.repository }}" \
+                   --head "${{ github.ref_name }}" --base main \
+                   --state open --json number --jq 'length')
+          if [ "${OPEN:-0}" -gt 0 ]; then
+            echo "branch '${{ github.ref_name }}' has an open PR into main — allowed"; exit 0
+          fi
+          echo "::error::Refusing to deploy prod from '${{ github.ref_name }}': not main and no open PR into main."
+          exit 1
+
+  # ───────────────────────────────────────────────────────────────────────
+  # 0b. Resolve environment
   # ───────────────────────────────────────────────────────────────────────
   resolve-environment:
     runs-on: ubuntu-latest
+    needs: [guard-ref]
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
     steps:
@@ -110,10 +157,25 @@ jobs:
           # Without it the hosted endpoint 403s every POST /mcp (the 3.3.x
           # hardening). Idempotent: drop any prior value, then add the current
           # public host + its new.* preview alias.
-          jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" \
+          #
+          # TESTRELIC_MCP_CAPS is injected the same way — see MCP_CAPS above for
+          # why the default `core`-only surface is not what prod should serve.
+          #
+          # TESTRELIC_MCP_MULTI_TENANT MUST be "true" here. The auth gate turns
+          # `requireAuth` on by default for a non-loopback bind but leaves
+          # `multiTenant` OFF, and in single-tenant mode the gate compares the
+          # caller's bearer against the server's OWN token. No customer has that
+          # secret, so shipping the gate without this flag 401s the entire fleet
+          # on the first deploy. With it, any well-formed tr_mcp_* PAT is
+          # accepted at the edge and validated for real when the session
+          # bootstraps against the platform — and each session gets its own
+          # clients/bootstrap/cache keyed to that caller.
+          jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" --arg CAPS "${{ env.MCP_CAPS }}" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
              | .containerDefinitions[0].image = $IMAGE
-             | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])' \
+             | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_MULTI_TENANT")) + [{"name": "TESTRELIC_MCP_MULTI_TENANT", "value": "true"}])' \
             /tmp/task-def.json > /tmp/task-def-updated.json
 
       - name: Register new task definition revision
@@ -155,3 +217,50 @@ jobs:
           done
           echo "Health check failed after $MAX_ATTEMPTS attempts (last HTTP $STATUS)"
           exit 1
+
+      - name: Client smoke check
+        # /healthz is served from static config and answers 200 even when the
+        # server is refusing every real client. On 2026-09-01 it reported
+        # healthy through an outage in which 100% of clients got 403, because
+        # the origin allow-list was built from the Host allow-list and could
+        # only ever contain our own hostnames.
+        #
+        # So probe the way a CLIENT does, not the way a load balancer does: a
+        # real POST /mcp initialize carrying an Origin header. curl sends no
+        # Origin by default and the SDK skips the check when it is absent —
+        # which is exactly why every manual probe looked fine.
+        run: |
+          BASE="https://${{ env.INGRESS_HOST }}"
+          INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-smoke","version":"1"}}}'
+          FAILED=0
+
+          # A browser/Electron/webview origin must not be REJECTED. The test is
+          # "not 403", not "is 200": once the auth gate is on, an unauthenticated
+          # initialize correctly answers 401, and asserting 200 here would fail
+          # the deploy for the wrong reason. The Host below is always correct on
+          # these probes, so a 403 can only mean the Origin was refused.
+          for ORIGIN in "https://claude.ai" "vscode-webview://smoke" "null"; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 -X POST "$BASE/mcp" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -H "Origin: $ORIGIN" -d "$INIT")
+            case "$CODE" in
+              403) echo "::error::Origin $ORIGIN -> 403 — the origin was refused; hosted clients cannot connect"; FAILED=1 ;;
+              200|401) echo "ok   Origin $ORIGIN -> $CODE (origin accepted)" ;;
+              *)   echo "::error::Origin $ORIGIN -> $CODE (unexpected)"; FAILED=1 ;;
+            esac
+          done
+
+          # ...and DNS-rebinding protection must still reject a foreign Host.
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 -X POST "$BASE/mcp" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H 'Host: evil.example.com' -d "$INIT")
+          if [ "$CODE" = "403" ]; then
+            echo "ok   bogus Host -> 403"
+          else
+            echo "::error::bogus Host -> $CODE (expected 403) — rebinding protection is not enforcing"
+            FAILED=1
+          fi
+
+          exit $FAILED

@@ -20,11 +20,13 @@ is intentionally tiny: a manifest (`.cursor-plugin/plugin.json`), an
 a logo, and docs. No binaries, no remote-fetched scripts, no third-party
 credentials.
 
-> **Marketplace submission pre-requisite:** the `mcp.json` currently uses the
-> vendored local `dist/` build (works immediately from a git clone or the
-> Cursor local-plugin install). Once `@testrelic/mcp` is published to npm,
-> update `mcp.json` to `npx -y @testrelic/mcp@<version>` before the final
-> marketplace submission so end-users don't need the source repo.
+> **Note for plugin authors:** the bundled `mcp.json` uses the vendored local
+> `dist/` build, which works immediately from a git clone or the Cursor
+> local-plugin install. **End users should not use that form** — `@testrelic/mcp`
+> is published to npm, so use the `npx` config in
+> [Install as an end user](#install-as-an-end-user) below. A config that points
+> at a path inside a checkout or a global `node_modules` breaks as soon as that
+> path moves (an npm update, a Node upgrade, a different machine).
 
 ### Install from the marketplace
 
@@ -60,6 +62,56 @@ your Cursor MCP configuration — it is identical to what the plugin ships:
 Cursor runs this with the plugin directory as the working directory, so
 `packages/mcp/dist/cli.js` resolves relative to the install path. No npm
 package or internet access is required.
+
+### Install as an end user
+
+Use one of these two forms. Neither depends on a path inside a checkout.
+
+**Local (stdio) — runs the server on your machine:**
+
+```json
+{
+  "mcpServers": {
+    "testrelic": {
+      "command": "npx",
+      "args": [
+        "-y", "@testrelic/mcp",
+        "--caps", "coverage,creation,healing,impact,triage,signals,devtools"
+      ],
+      "env": { "TESTRELIC_MCP_TOKEN": "tr_mcp_..." }
+    }
+  }
+}
+```
+
+**Hosted — no local install:**
+
+```json
+{
+  "mcpServers": {
+    "testrelic": {
+      "type": "http",
+      "url": "https://mcp.testrelic.ai/mcp",
+      "headers": { "Authorization": "Bearer tr_mcp_..." }
+    }
+  }
+}
+```
+
+Notes:
+
+- `core` is always enabled and does not need to be listed. The capabilities
+  above are the full set the hosted service advertises; omitting one only
+  hides its tools.
+- Get a `tr_mcp_*` token from
+  `https://platform.testrelic.ai/settings/mcp-tokens`, or run
+  `npx @testrelic/mcp login` to write `~/.testrelic/token` and drop the `env`
+  block entirely.
+- `--cloud-url` overrides the **cloud-platform-app API** base URL
+  (default `https://platform.testrelic.ai/api/v1`). It is *not* the MCP host,
+  and it is not validated — a value with no scheme, or with stray whitespace,
+  is passed through to the HTTP client and makes every upstream call fail. Do
+  not set it unless you are pointing at a non-default platform deployment.
 
 ### Mock mode by default — no secrets required
 

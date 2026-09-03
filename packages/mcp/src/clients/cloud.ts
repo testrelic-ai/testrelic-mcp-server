@@ -212,7 +212,9 @@ function toRun(r: PlatformRun): TestRun {
   const s = r.summary ?? {};
   return {
     run_id: r.runId,
-    project_id: r.repoId,
+    // `repoId` is not guaranteed on every platform payload; an undefined here
+    // would be a schema violation, and tools now DECLARE this shape.
+    project_id: r.repoId ?? "",
     framework: r.testFramework ?? "unknown",
     status: toRunStatus(r),
     total: r.totalTests ?? 0,
@@ -221,8 +223,12 @@ function toRun(r: PlatformRun): TestRun {
     skipped: s.skipped ?? 0,
     flaky: s.flaky ?? 0,
     duration_ms: r.duration ?? 0,
-    started_at: r.startedAt,
-    finished_at: r.finishedAt ?? r.startedAt,
+    // Timestamps were the two fields with no fallback: a run missing startedAt
+    // produced `undefined`, which rendered as the literal "undefined" and now
+    // would fail the declared outputSchema. Empty string keeps it degraded-but-
+    // valid, exactly like branch/commit above.
+    started_at: r.startedAt ?? "",
+    finished_at: r.finishedAt ?? r.startedAt ?? "",
     branch: r.branch ?? "",
     commit_sha: r.commit ?? "",
     triggered_by: "",
@@ -1191,13 +1197,16 @@ export function legacyClickhouseAdapter(cloud: CloudOps) {
       const r = await cloud.getFlakiness(undefined, 7).catch(() => ({ window: 7, scores: [] }));
       const scores = collection<FlakinessRow>(r, "scores") ?? [];
       return {
+        // Defaulted, not forwarded: these rows are decoration on a diagnosis,
+        // and tools now declare this shape — one drifted field must not fail the
+        // whole result.
         data: scores.map((s) => ({
-          test_id: s.testId,
-          test_name: s.testTitle,
+          test_id: s.testId ?? "",
+          test_name: s.testTitle ?? "",
           flakiness_score: toFraction(s.score),
           p90_duration_ms: 0,
-          run_count_7d: s.totalRuns,
-          failure_count_7d: s.flakyRuns,
+          run_count_7d: s.totalRuns ?? 0,
+          failure_count_7d: s.flakyRuns ?? 0,
         })),
         rows: scores.length,
       };
