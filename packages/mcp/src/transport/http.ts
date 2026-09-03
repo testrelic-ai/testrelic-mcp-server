@@ -1,7 +1,8 @@
 import express, { type Request, type Response } from "express";
+import rateLimit from "express-rate-limit";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { getLogger } from "../logger.js";
 import type { ResolvedConfig } from "../config.js";
 import { version } from "../version.js";
@@ -51,6 +52,12 @@ export function isLoopbackHost(host: string): boolean {
  * only knew the bind address, so the protection took the whole hosted
  * endpoint down rather than protecting it. Public entries are added both bare
  * (proxies at :443/:80 forward `Host: name` with no port) and with our port.
+ *
+ * Origin is handled differently from Host: it is enforced only for a local
+ * loopback server. A hosted deployment returns an EMPTY `allowedOrigins`,
+ * which the SDK treats as "do not validate Origin". See the comment at the
+ * return site for why an origin allow-list is unimplementable for a hosted
+ * MCP endpoint.
  */
 export function buildAllowList(
   host: string,
@@ -73,6 +80,24 @@ export function buildAllowList(
     hosts.add(h);
     hosts.add(toHostHeader(h, port));
   }
+  // Origin is a *browser* control and cannot be allow-listed for a hosted
+  // endpoint. Real MCP clients send origins we can never enumerate --
+  // `https://claude.ai`, `vscode-webview://<random>`, `app://...`, or the
+  // literal `null` from an Electron shell -- while this list can only ever
+  // contain our own hostnames, because it is derived from them. Enforcing it
+  // 403'd every real client with "Invalid Origin header" while a bare curl
+  // (which sends no Origin header at all) sailed through, so the endpoint
+  // looked healthy from every probe we ran.
+  //
+  // This is the Origin half of the bug #42/#43 fixed for Host. The SDK skips
+  // Origin validation entirely when this list is empty, and still enforces
+  // `allowedHosts` -- the control that actually stops DNS rebinding. For a
+  // hosted server, authentication rather than Origin is the gate.
+  const hosted = publicHosts.some((h) => h.trim() !== "") || !isLoopbackHost(host);
+  if (hosted) return { allowedHosts: [...hosts], allowedOrigins: [] };
+
+  // Loopback/local HTTP keeps the Origin allow-list: a malicious web page can
+  // reach 127.0.0.1, which is the case this protection was written for.
   const origins = new Set<string>();
   for (const h of hosts) {
     origins.add(`http://${h}`);
@@ -82,7 +107,7 @@ export function buildAllowList(
 }
 
 export async function startHttp(
-  buildServer: () => McpServer,
+  buildServer: (sessionToken?: string) => Promise<McpServer>,
   config: ResolvedConfig,
 ): Promise<() => Promise<void>> {
   const app = express();
@@ -95,7 +120,17 @@ export async function startHttp(
   // of Host/Origin values so a malicious web page cannot drive this server via
   // the user's browser.
   const { allowedHosts, allowedOrigins } = buildAllowList(host, port, config.server.publicHosts);
-  getLogger().info({ allowedHosts }, "http transport Host allow-list");
+  // Log the Origin policy too. This previously logged only `allowedHosts`, so a
+  // deployment that was 403-ing every client on Origin looked identical in the
+  // logs to a healthy one.
+  getLogger().info(
+    {
+      allowedHosts,
+      originPolicy: allowedOrigins.length === 0 ? "not-enforced (hosted)" : "allow-list (local)",
+      allowedOrigins,
+    },
+    "http transport Host/Origin allow-list",
+  );
 
   if (!isLoopbackHost(host)) {
     getLogger().warn(
@@ -109,16 +144,193 @@ export async function startHttp(
     res.json({ ok: true, version, transport: "http", capabilities: config.capabilities });
   });
 
+  /**
+   * Caller authentication for `/mcp`.
+   *
+   * Until this existed a hosted deployment ran tool calls for ANYONE who could
+   * reach it: the transport read only `mcp-session-id` and never looked at
+   * `Authorization`, while every session used the container's own PAT. So an
+   * anonymous request off the public internet executed as the owning org.
+   * Verified against production 2026-09-01 — an unauthenticated `tools/call`
+   * returned the org's repository list.
+   *
+   * The gate compares against the server's OWN configured token, which makes
+   * it a shared secret rather than per-caller identity: every session still
+   * acts as the one configured identity, exactly as before. Using the caller's
+   * own PAT for upstream calls is the real fix and is deliberately not
+   * attempted here — it changes the product's tenancy model and deserves its
+   * own change.
+   *
+   * `/healthz` stays open on purpose: the load balancer probes it and it
+   * reveals only a version string.
+   */
+  const expectedToken = config.cloud.token;
+  const requireAuth = config.server.requireAuth;
+  const multiTenant = config.server.multiTenant;
+
+  // In multi-tenant mode the server holds no shared secret to compare against
+  // — the platform validates each caller's PAT — so the "auth on but no token"
+  // guard below does not apply.
+  if (requireAuth && !multiTenant && !expectedToken) {
+    // Fail closed, loudly. A reachable server that demands auth but has no
+    // token to compare against can never authorise anyone, and serving
+    // everyone instead would be the very bug this guard exists to prevent.
+    throw new Error(
+      "http transport: server.requireAuth is on but no cloud token is configured — " +
+        "set TESTRELIC_MCP_TOKEN, or set TESTRELIC_MCP_REQUIRE_AUTH=false only if an " +
+        "authenticating proxy sits in front of this server.",
+    );
+  }
+  if (!requireAuth && !isLoopbackHost(host)) {
+    getLogger().warn(
+      { host },
+      "http transport: caller authentication is DISABLED on a non-loopback bind — " +
+        "anyone who can reach this port can run tools as the configured identity.",
+    );
+  }
+
+  /** Constant-time compare, over digests so a length mismatch cannot throw
+   *  (and cannot leak the token's length either). */
+  const tokenMatches = (presented: string): boolean =>
+    timingSafeEqual(
+      createHash("sha256").update(presented).digest(),
+      createHash("sha256").update(expectedToken).digest(),
+    );
+
+  /**
+   * Returns the token the caller presented, or null when the request is
+   * refused. It returns the TOKEN rather than a boolean because the session
+   * is built from it: the credential is the identity, not merely a pass.
+   */
+  const authorize = (req: Request, res: Response): string | null | undefined => {
+    if (!requireAuth) return undefined;
+    const header = req.header("authorization") ?? "";
+    // Parsed by index, NOT by regex. `/^Bearer\s+(.+)$/` backtracks
+    // catastrophically on attacker-controlled input — CodeQL flagged it as
+    // polynomial ReDoS ("slow on strings starting with 'bearer ' and with many
+    // repetitions of ' '"), and an unauthenticated request is exactly where an
+    // attacker controls this string. This scan is linear and allocation-light.
+    const sep = header.indexOf(" ");
+    const presented =
+      sep > 0 && header.slice(0, sep).toLowerCase() === "bearer"
+        ? header.slice(sep + 1).trim()
+        : undefined;
+    // Multi-tenant: ANY well-formed PAT is accepted here and validated for
+    // real by the platform when the session bootstraps (a bad one 401s there).
+    // Deliberately not a local guess at what a valid token is — the server
+    // does not own that answer, and a shape check that is stricter than the
+    // platform's would reject credentials the platform considers fine.
+    if (presented && multiTenant && presented.startsWith("tr_mcp_")) return presented;
+    if (presented && !multiTenant && tokenMatches(presented)) return presented;
+    getLogger().warn(
+      { hasHeader: Boolean(header) },
+      "http transport: rejected an unauthenticated /mcp request",
+    );
+    res.setHeader("WWW-Authenticate", 'Bearer realm="testrelic-mcp"');
+    res.status(401).json({
+      error: {
+        code: "UNAUTHORIZED",
+        message:
+          "This MCP server requires a credential. Send Authorization: Bearer <TESTRELIC_MCP_TOKEN>.",
+      },
+    });
+    return null;
+  };
+
+  /**
+   * Rate limit on the authorizing routes.
+   *
+   * An endpoint that checks a credential and will answer as fast as you can
+   * ask is a guessing oracle, so the limiter goes on with the auth check
+   * rather than after it. The token is 64 hex characters, so brute force is
+   * not the realistic threat — flooding is, and this bounds it.
+   *
+   * ⚠ `trust proxy` is deliberately NOT enabled. Behind CloudFront → nginx
+   * the client IP arrives only in `X-Forwarded-For`, which a caller can spoof;
+   * trusting it would let an attacker mint a fresh bucket per request and
+   * evade the limit entirely. Untrusted, `req.ip` is the proxy, so this
+   * behaves as a near-global ceiling. That is the honest trade: a real
+   * per-client limit needs an authenticated identity, which is what the
+   * per-caller-PAT work would provide. The ceiling is set high enough that a
+   * legitimate MCP session — which makes many rapid tool calls — never sees
+   * it.
+   */
+  const mcpLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 600,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: { code: "RATE_LIMITED", message: "Too many requests." } },
+  });
+
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
+  /**
+   * Which identity opened each session.
+   *
+   * A session id is a routing handle, not a credential — but the server it
+   * routes to is already connected and already bound to ONE caller's token.
+   * So once sessions carry different identities, accepting a request purely
+   * because its `mcp-session-id` matches would let anyone who learns that id
+   * act as the session's owner. Every request is therefore checked against
+   * the identity that opened the session, not just against the id.
+   */
+  const sessionOwner = new Map<string, string>();
+  const ownerId = (token: string | null | undefined): string =>
+    createHash("sha256").update(token ?? "").digest("hex").slice(0, 32);
 
-  app.post("/mcp", async (req: Request, res: Response) => {
-    const sessionHeader = req.header("mcp-session-id");
-    let transport = sessionHeader ? transports.get(sessionHeader) : undefined;
+  /**
+   * Look up a session, refusing one that belongs to somebody else.
+   * Returns `undefined` for "no such session" so the caller keeps its own
+   * status code, and sends 403 itself when the session exists but is not
+   * yours — those are different answers and must not be conflated.
+   */
+  const sessionFor = (
+    req: Request,
+    res: Response,
+    token: string | null | undefined,
+  ): StreamableHTTPServerTransport | undefined => {
+    const id = req.header("mcp-session-id");
+    if (!id) return undefined;
+    const transport = transports.get(id);
+    if (!transport) return undefined;
+    const owner = sessionOwner.get(id);
+    if (requireAuth && owner !== undefined && owner !== ownerId(token)) {
+      getLogger().warn({ sessionId: id }, "http transport: session id presented by a different identity");
+      res.status(403).json({
+        error: { code: "FORBIDDEN", message: "This session belongs to a different credential." },
+      });
+      return undefined;
+    }
+    return transport;
+  };
+
+  app.post("/mcp", mcpLimiter, async (req: Request, res: Response) => {
+    const sessionToken = authorize(req, res);
+    if (sessionToken === null) return;
+    if (res.headersSent) return;
+    let transport = sessionFor(req, res, sessionToken);
+    if (res.headersSent) return;
 
     if (!transport) {
       const newSessionId = randomUUID();
-      const sessionServer = buildServer();
+      // Built from the CALLER's token: the session talks upstream as them.
+      // This also authenticates — buildServer bootstraps against the platform,
+      // which 401s a bad PAT, so a session only exists for a real credential.
+      let sessionServer: McpServer;
+      try {
+        sessionServer = await buildServer(sessionToken);
+      } catch (err) {
+        getLogger().warn({ err: (err as Error).message }, "http transport: session build failed");
+        res.status(401).json({
+          error: {
+            code: "UNAUTHORIZED",
+            message: "The supplied credential was rejected by TestRelic Cloud.",
+          },
+        });
+        return;
+      }
+      sessionOwner.set(newSessionId, ownerId(sessionToken));
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => newSessionId,
         enableDnsRebindingProtection: true,
@@ -130,6 +342,7 @@ export async function startHttp(
         },
         onsessionclosed: (id: string) => {
           transports.delete(id);
+          sessionOwner.delete(id);
           const s = servers.get(id);
           servers.delete(id);
           if (s) void s.close().catch(() => undefined);
@@ -146,9 +359,11 @@ export async function startHttp(
     }
   });
 
-  app.get("/mcp", async (req: Request, res: Response) => {
-    const sessionHeader = req.header("mcp-session-id");
-    const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
+  app.get("/mcp", mcpLimiter, async (req: Request, res: Response) => {
+    const sessionToken = authorize(req, res);
+    if (sessionToken === null) return;
+    const transport = sessionFor(req, res, sessionToken);
+    if (res.headersSent) return;
     if (!transport) {
       res.status(400).json({ error: "missing or invalid mcp-session-id" });
       return;
@@ -156,15 +371,19 @@ export async function startHttp(
     await transport.handleRequest(req, res);
   });
 
-  app.delete("/mcp", async (req: Request, res: Response) => {
+  app.delete("/mcp", mcpLimiter, async (req: Request, res: Response) => {
+    const sessionToken = authorize(req, res);
+    if (sessionToken === null) return;
     const sessionHeader = req.header("mcp-session-id");
-    const transport = sessionHeader ? transports.get(sessionHeader) : undefined;
+    const transport = sessionFor(req, res, sessionToken);
+    if (res.headersSent) return;
     if (!transport) {
       res.status(404).json({ error: "session not found" });
       return;
     }
     await transport.close();
     transports.delete(sessionHeader!);
+    sessionOwner.delete(sessionHeader!);
     const s = servers.get(sessionHeader!);
     servers.delete(sessionHeader!);
     if (s) await s.close().catch(() => undefined);
