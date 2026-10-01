@@ -1818,6 +1818,26 @@ def python37_syntax_compat(c):
                     raise AssertionError("%s is not python 3.7 syntax: %s" % (fn, e))
 
 
+@case
+def runner_regex_is_not_redos(c):
+    """CodeQL py/redos on _RX_RUNNER: 'npm' followed by many '-- -' pieces backtracked
+    exponentially. Each pathological line must be answered in well under a second, and the
+    rule must still match real installer invocations."""
+    import time
+    lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    from guard import supply
+    for bad in ["npm " + "-- -" * 4000, "npm --" + " -- --" * 4000, "npm " + "-a -" * 4000 + "!"]:
+        t0 = time.perf_counter()
+        supply._RX_RUNNER.search(bad)
+        dt = time.perf_counter() - t0
+        assert dt < 1.0, (bad[:20], dt)
+    for ok in ["npm install left-pad", "npm --prefix web install x", "pnpm --filter app add y",
+               "yarn global add z", "npx some-tool", "npm -g install q"]:
+        assert supply._RX_RUNNER.search(ok), ok
+
+
 def main():
     label = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("LC_ALL", "")
     only = set(sys.argv[2:])
@@ -1853,3 +1873,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -32,7 +32,7 @@ jobs:
         with:
           fetch-depth: 0              # commit-provenance needs the history
           persist-credentials: false  # no token left in .git/config
-      - uses: testrelic-ai/supply-chain-guard@94264d5e963e8b60cc08d2a354dd6f2b345bd6a4 # v1
+      - uses: testrelic-ai/supply-chain-guard@7761bd3ba6d05c3bed45f2105308f2b7e0fbd804 # v1
         with:
           # pr: base..head of the pull request; push: before..after plus the
           # forced-push checks; full (workflow_dispatch): no commit range
