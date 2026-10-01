@@ -250,7 +250,7 @@ def patch_tree(root, label, patch_path=None):
             if not os.path.isdir(os.path.dirname(dst)):
                 os.makedirs(os.path.dirname(dst))
             shutil.copyfile(src, dst)
-            os.chmod(dst, 0o755 if os.stat(src).st_mode & 0o111 else 0o644)
+            os.chmod(dst, 0o700 if os.stat(src).st_mode & 0o111 else 0o600)  # git keeps only the exec bit
         res["vendored"] = len(files)
     if deleted:
         _git(repo, ["rm", "-q", "--cached", "--ignore-unmatch", "--"] + deleted)
