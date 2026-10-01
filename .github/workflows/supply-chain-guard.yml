@@ -1,12 +1,8 @@
 name: Supply-chain guard
 
-# The canonical supply-chain guard, testrelic-ai/supply-chain-guard, run at a
-# pinned 40-hex commit SHA so a commit in this repository cannot weaken the
-# checks it is being judged by. The guard repository is private and this one is
-# public, so .github/actions/supply-chain-guard checks the pinned commit out with
-# a read-only deploy key (secret SUPPLY_CHAIN_GUARD_SSH_KEY) and runs it. Pull
-# requests from forks get no secrets, so their guard check fails; a maintainer
-# pushes the branch to this repository and opens the pull request from it. One job runs all three tools:
+# The canonical supply-chain guard, testrelic-ai/supply-chain-guard, consumed
+# pinned to a 40-hex commit SHA so a commit in this repository cannot weaken the
+# checks it is being judged by. One job runs all three tools:
 #   scan-payload        P1-P8  injected payloads and the loaders that run them
 #   supply-chain-check  S1-S7  lockfiles, registry config, install scripts, workflows
 #   commit-provenance   C1-C3  the commits of this PR or push, forced pushes
@@ -36,9 +32,8 @@ jobs:
         with:
           fetch-depth: 0              # commit-provenance needs the history
           persist-credentials: false  # no token left in .git/config
-      - uses: ./.github/actions/supply-chain-guard
+      - uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
         with:
-          ssh-key: ${{ secrets.SUPPLY_CHAIN_GUARD_SSH_KEY }}
           # pr: base..head of the pull request; push: before..after plus the
           # forced-push checks; full (workflow_dispatch): no commit range
           mode: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'push' || 'full' }}
