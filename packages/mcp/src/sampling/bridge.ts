@@ -35,8 +35,19 @@ export class SamplingBridge {
 
   public async createMessage(prompt: string, opts: SamplingOptions = {}): Promise<SamplingResult> {
     try {
-      const sdkServer = (this.server as unknown as { server: { createMessage: (req: unknown) => Promise<{ content: { type: string; text?: string }; model?: string; stopReason?: string }> } }).server;
+      const sdkServer = (this.server as unknown as {
+        server: {
+          createMessage: (req: unknown) => Promise<{ content: { type: string; text?: string }; model?: string; stopReason?: string }>;
+          getClientCapabilities?: () => { sampling?: unknown } | undefined;
+        };
+      }).server;
       if (!sdkServer?.createMessage) throw new Error("sampling not supported by client");
+      // Ask only a client that declared sampling. The SDK does not check this
+      // unless enforceStrictCapabilities is set, so an undeclared request goes
+      // out anyway and waits the SDK's 60s default for a reply that may never
+      // come. Behind the hosted load balancer (~60s idle) the caller then gets
+      // a reset stream instead of the fallback (TEAI-375 follow-up).
+      if (!sdkServer.getClientCapabilities?.()?.sampling) throw new Error("client did not declare sampling");
 
       const result = await sdkServer.createMessage({
         messages: [
