@@ -22,13 +22,20 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Require the deploy key
+    - name: Require the deploy key and a free checkout path
       shell: bash
       env:
         GUARD_KEY: ${{ inputs.ssh-key }}
       run: |
         if [ -z "$GUARD_KEY" ]; then
-          echo "::error::SUPPLY_CHAIN_GUARD_SSH_KEY is not available to this run (pull requests from forks get no secrets). The guard cannot run, so this check fails. A maintainer can push the branch to this repository to run it."
+          echo "::error::SUPPLY_CHAIN_GUARD_SSH_KEY is not available to this run (pull requests from forks get no secrets; Dependabot runs need the Dependabot copy of the secret). The guard cannot run, so this check fails. Push the branch to this repository and open the pull request from it."
+          exit 1
+        fi
+        # The pinned guard is checked out at this path. Files the repository put there
+        # would be replaced on disk by the guard's own, and the scan would then read
+        # those instead of the committed ones, so the path must not exist at all.
+        if [ -e .supply-chain-guard-pinned ] || [ -L .supply-chain-guard-pinned ] || [ -n "$(git ls-files -- .supply-chain-guard-pinned)" ]; then
+          echo "::error::.supply-chain-guard-pinned must not exist in this repository: the pinned guard is checked out there."
           exit 1
         fi
     - name: Check out the pinned guard

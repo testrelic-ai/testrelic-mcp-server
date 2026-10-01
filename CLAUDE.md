@@ -188,7 +188,7 @@ from a tree the guard rejects.
   `.github/actions/supply-chain-guard`, which checks out the pinned SHA with the
   read-only deploy key in the `SUPPLY_CHAIN_GUARD_SSH_KEY` secret (set for
   Actions and for Dependabot). Pull requests from forks get no secrets, so their
-  guard check fails until a maintainer pushes the branch here. To upgrade the
+  guard check fails; push the branch here and open the PR from it. To upgrade the
   guard, change the SHA in that action (both places).
 - `.supply-chain-guard.allow` holds reviewed exceptions, one per line:
   `check-id<TAB>path<TAB>fingerprint<TAB>reason`. Fix a finding before you
