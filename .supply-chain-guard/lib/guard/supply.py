@@ -922,10 +922,12 @@ _RX_ENV_SCRIPTS = re.compile(r"(?i)\b(?:npm_config_ignore_scripts|yarn_ignore_sc
                              r"|\byarn_enable_scripts[\"']?\s*[:=]\s*[\"']?true\b")
 _RX_NODE_OPTIONS = re.compile(r"\bNODE_OPTIONS[\"']?\s*[:=]\s*[\"']?([^\n]*)")
 _RX_URL = re.compile(r"(?i)\b(?:https?:)?//[^\s\"';|&)]+")
-# package runners / installers whose arguments are package specs
+# package runners / installers whose arguments are package specs. An option must start with a
+# letter or digit after its dashes, so option tokens, their values and the gaps between them
+# cannot overlap: '[\w-]+' let 'npm -- -- -- ...' split exponentially many ways (ReDoS).
 _RX_RUNNER = re.compile(
     r"(?:^|[;&|(]\s*|\b(?:then|do|else|sudo|exec|time|xargs)\s+)"
-    r"(npx|pnpx|bunx|(?:npm|pnpm|yarn|bun)(?:\s+--?[\w-]+(?:=\S+|\s+(?!-)[^\s;&|]+)?)*?\s+"
+    r"(npx|pnpx|bunx|(?:npm|pnpm|yarn|bun)(?:\s+--?[A-Za-z0-9][\w-]*(?:=\S+|\s+(?!-)[^\s;&|]+)?)*?\s+"
     r"(?:exec|x|dlx|install|i|add|update|up|global\s+add))(?=\s|$)")
 _RUNNER_VALUE_FLAGS = frozenset(("--prefix", "-C", "--dir", "-w", "--workspace", "--filter", "-F", "--cwd", "--tag",
                                  "--registry", "--cache", "--userconfig", "--globalconfig", "-c", "--call",
