@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# supply-chain-guard: adoption-precheck (rollout helper; not part of the action's checks).
+# Lists what a consuming repository's adoption PR must delete, replace, fix or allowlist.
+# Exit status: 0 nothing to change, 1 adoption work required, 2 could not check.
+set -u
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || {
+  echo "adoption-precheck: COULD NOT CHECK: cannot resolve the install directory"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "adoption-precheck: COULD NOT CHECK: python3 not found"; exit 2; }
+command -v git >/dev/null 2>&1 || { echo "adoption-precheck: COULD NOT CHECK: git not found"; exit 2; }
+python3 -I -B "$here/adoption_precheck.py" "$@"
+rc=$?
+case $rc in 0|1|2) exit $rc ;; *) echo "adoption-precheck: COULD NOT CHECK: interpreter exited $rc"; exit 2 ;; esac

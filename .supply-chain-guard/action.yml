@@ -1,0 +1,27 @@
+name: supply-chain-guard
+description: >-
+  Blocking supply-chain checks for a checked-out repository: injected-payload scan (P1-P8),
+  lockfile / registry / workflow lint (S1-S7) and commit provenance (C1-C3). Fails on any
+  finding and on any check that cannot run. Pin this action to a 40-hex commit SHA.
+author: testrelic-ai
+inputs:
+  mode:
+    description: >-
+      pr | push | full. Empty (the default) derives it from the triggering event:
+      pull_request -> pr, push -> push, anything else -> full (no commit-provenance range).
+    required: false
+    default: ''
+  checks:
+    description: Comma-separated check ids (P1,P2,...,S1,...,C1,...) or "all".
+    required: false
+    default: all
+runs:
+  using: composite
+  steps:
+    - name: supply-chain-guard
+      shell: bash
+      env:
+        GUARD_MODE: ${{ inputs.mode }}
+        GUARD_CHECKS: ${{ inputs.checks }}
+        GUARD_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/bin/guard-ci"

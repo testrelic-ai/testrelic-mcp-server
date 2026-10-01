@@ -1,0 +1,40 @@
+name: Supply-chain guard
+
+# The canonical supply-chain guard, testrelic-ai/supply-chain-guard, consumed
+# pinned to a 40-hex commit SHA so a commit in this repository cannot weaken the
+# checks it is being judged by. One job runs all three tools:
+#   scan-payload        P1-P8  injected payloads and the loaders that run them
+#   supply-chain-check  S1-S7  lockfiles, registry config, install scripts, workflows
+#   commit-provenance   C1-C3  the commits of this PR or push, forced pushes
+# Every finding fails the job; there is no warn-only mode. Reviewed exceptions
+# live in .supply-chain-guard.allow (check, path, fingerprint, reason).
+#
+# The job name "Supply-chain guard" is the required status check for main and
+# stage. Do not rename it. Deploy, publish and CI jobs in the other workflows
+# `needs:` their own copy of this job.
+
+on:
+  pull_request:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Supply-chain guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0              # commit-provenance needs the history
+          persist-credentials: false  # no token left in .git/config
+      - uses: testrelic-ai/supply-chain-guard@94264d5e963e8b60cc08d2a354dd6f2b345bd6a4 # v1
+        with:
+          # pr: base..head of the pull request; push: before..after plus the
+          # forced-push checks; full (workflow_dispatch): no commit range
+          mode: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'push' || 'full' }}
+          checks: all
