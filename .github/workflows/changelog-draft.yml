@@ -22,17 +22,34 @@ permissions:
   contents: read
 
 jobs:
-  draft-changelog-entry:
+  # The drafting job holds DOCS_REPO_TOKEN (write access to testrelic-ai/docs)
+  # and publishes a branch + PR there, so it waits for the supply-chain guard
+  # (testrelic-ai/supply-chain-guard, pinned by commit SHA) on the tagged tree.
+  guard:
+    name: Supply-chain guard (publish gate)
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0              # commit-provenance needs the history
+          persist-credentials: false  # no token left in .git/config
+      - uses: testrelic-ai/supply-chain-guard@94264d5e963e8b60cc08d2a354dd6f2b345bd6a4 # v1
+        with:
+          mode: push
+
+  draft-changelog-entry:
+    runs-on: ubuntu-latest
+    needs: [guard]
+    steps:
       - name: Check out this repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           path: mcp
+          persist-credentials: false
 
       - name: Check out docs repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: testrelic-ai/docs
           ref: docs-next-migration
