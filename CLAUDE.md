@@ -168,7 +168,8 @@ npm run test          # everything
    `ai`, `marketplace`, `apps`, `artifacts`, and `memory` sections only
    appear once a maintainer rolls the README. `roll` also regenerates the
    agent skill's tool inventory and its mirrors.
-4. `bash .supply-chain-guard/bin/scan-payload && bash .supply-chain-guard/bin/supply-chain-check`
+4. The supply-chain guard, if you can read the private
+   `testrelic-ai/supply-chain-guard` ("Run it locally" in its README)
    — the same checks as the required **Supply-chain guard** CI job (needs
    bash, git and python3; runs nothing from the repo). Run it after
    `git add`: it only reads tracked files.
@@ -183,9 +184,12 @@ finding fails the job. The deploy, publish and CI workflows each run their own
 copy of the guard job and `needs:` it, so nothing builds, deploys or publishes
 from a tree the guard rejects.
 
-- `.supply-chain-guard/` is a byte-identical copy of the pinned guard. Never
-  edit it: the pinned action fails any PR whose copy differs (P8). Update it
-  only together with the pinned SHA in the workflows.
+- The guard repository is private, so every workflow runs it through
+  `.github/actions/supply-chain-guard`, which checks out the pinned SHA with the
+  read-only deploy key in the `SUPPLY_CHAIN_GUARD_SSH_KEY` secret (set for
+  Actions and for Dependabot). Pull requests from forks get no secrets, so their
+  guard check fails until a maintainer pushes the branch here. To upgrade the
+  guard, change the SHA in that action (both places).
 - `.supply-chain-guard.allow` holds reviewed exceptions, one per line:
   `check-id<TAB>path<TAB>fingerprint<TAB>reason`. Fix a finding before you
   allowlist it, and give every entry a concrete reason. A stale entry fails.

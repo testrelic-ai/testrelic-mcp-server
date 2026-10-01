@@ -24,8 +24,9 @@ jobs:
         with:
           fetch-depth: 0              # commit-provenance needs the history
           persist-credentials: false  # no token left in .git/config
-      - uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
+      - uses: ./.github/actions/supply-chain-guard
         with:
+          ssh-key: ${{ secrets.SUPPLY_CHAIN_GUARD_SSH_KEY }}
           mode: ${{ github.event_name == 'pull_request' && 'pr' || 'push' }}
 
   test:

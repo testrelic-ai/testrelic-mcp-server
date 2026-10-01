@@ -1,0 +1,54 @@
+name: supply-chain-guard (pinned, private)
+description: >-
+  Runs testrelic-ai/supply-chain-guard at the pinned commit below. The guard repository is
+  private and this repository is public, and GitHub does not let a public repository use an
+  action from a private one, so this wrapper checks the pinned commit out with a read-only
+  deploy key and runs it as a local action. The guard's code comes from that commit, never
+  from this tree. To upgrade, change the SHA in both places below.
+inputs:
+  mode:
+    description: pr | push | full, or empty to derive it from the triggering event.
+    required: false
+    default: ''
+  checks:
+    description: Comma-separated check ids, or "all".
+    required: false
+    default: all
+  ssh-key:
+    description: >-
+      The read-only deploy key of testrelic-ai/supply-chain-guard
+      (secrets.SUPPLY_CHAIN_GUARD_SSH_KEY, set for Actions and for Dependabot).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Require the deploy key
+      shell: bash
+      env:
+        GUARD_KEY: ${{ inputs.ssh-key }}
+      run: |
+        if [ -z "$GUARD_KEY" ]; then
+          echo "::error::SUPPLY_CHAIN_GUARD_SSH_KEY is not available to this run (pull requests from forks get no secrets). The guard cannot run, so this check fails. A maintainer can push the branch to this repository to run it."
+          exit 1
+        fi
+    - name: Check out the pinned guard
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: testrelic-ai/supply-chain-guard
+        ref: 0560a2effa3db1886d952774b52639e940684f29
+        ssh-key: ${{ inputs.ssh-key }}
+        path: .supply-chain-guard-pinned
+        persist-credentials: false
+    - name: Verify the checked-out commit
+      shell: bash
+      run: |
+        got=$(git -C .supply-chain-guard-pinned rev-parse HEAD)
+        if [ "$got" != "0560a2effa3db1886d952774b52639e940684f29" ]; then
+          echo "::error::checked out $got, expected the pinned guard commit"
+          exit 1
+        fi
+    - name: Supply-chain guard
+      uses: ./.supply-chain-guard-pinned
+      with:
+        mode: ${{ inputs.mode }}
+        checks: ${{ inputs.checks }}
