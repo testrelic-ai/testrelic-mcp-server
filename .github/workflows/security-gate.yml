@@ -46,9 +46,8 @@ jobs:
           persist-credentials: false  # no token left in .git/config
 
       - name: Scan tracked files, lockfiles, registry config and workflows
-        uses: ./.github/actions/supply-chain-guard
+        uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
         with:
-          ssh-key: ${{ secrets.SUPPLY_CHAIN_GUARD_SSH_KEY }}
           mode: full   # no commit range here; provenance is the job below
           checks: P1,P2,P2b,P3,P4,P5,P5b,P6,P7,P8,S1,S2,S3,S4,S5,S6,S7
 
@@ -67,8 +66,7 @@ jobs:
           persist-credentials: false
 
       - name: Check the provenance of the commits this PR introduces
-        uses: ./.github/actions/supply-chain-guard
+        uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
         with:
-          ssh-key: ${{ secrets.SUPPLY_CHAIN_GUARD_SSH_KEY }}
           mode: pr     # base.sha..head.sha of the pull request
           checks: C1,C2,C3

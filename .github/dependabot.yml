@@ -36,9 +36,7 @@ updates:
       include: scope
 
   - package-ecosystem: github-actions
-    directories:
-      - "/"
-      - "/.github/actions/*"
+    directory: "/"
     schedule:
       interval: weekly
     labels:
