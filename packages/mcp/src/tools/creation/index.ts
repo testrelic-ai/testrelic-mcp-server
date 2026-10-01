@@ -156,7 +156,7 @@ export const creationTools: ToolDefinition[] = [
         ...plan.steps.map((s) => `${s.step}. **${s.action}** → _${s.expectation}_`),
         plan.data_requirements && plan.data_requirements.length ? `\n### Data requirements\n${plan.data_requirements.map((d) => `- ${d}`).join("\n")}` : "",
         "",
-        "Next step: call `tr_generate_test` with this plan to produce runnable code.",
+        `Next step: call \`tr_generate_test\` with \`plan_cache_key: "${cache_key}"\` (or this plan inline) to produce runnable code.`,
       ]
         .filter(Boolean)
         .join("\n");
@@ -185,6 +185,17 @@ export const creationTools: ToolDefinition[] = [
         })
         .optional(),
       file_name: z.string().optional(),
+      // Aliases for the names a caller naturally reaches for. tr_plan_test
+      // returns its key as `cache_key` and this tool returns `file_path` and
+      // `framework`, so callers echo those back. Undeclared keys are stripped
+      // by the SDK before the handler runs, which turned a correct-looking
+      // call into "No plan found" (TEAI-375).
+      cache_key: z.string().optional().describe("Alias of plan_cache_key"),
+      file_path: z.string().optional().describe("Alias of file_name; only the base name is used"),
+      framework: z
+        .enum(["playwright", "cypress", "jest", "vitest"])
+        .optional()
+        .describe("Overrides the plan's framework"),
     },
     outputSchema: {
       file_path: z.string(),
@@ -193,9 +204,10 @@ export const creationTools: ToolDefinition[] = [
       code: z.string(),
     },
     handler: async (input, ctx) => {
+      const plan_cache_key = (input.plan_cache_key ?? input.cache_key) as string | undefined;
       let plan: TestPlan | undefined = input.plan as TestPlan | undefined;
-      if (!plan && input.plan_cache_key) {
-        const cached = ctx.cache.get<{ plan: TestPlan }>(input.plan_cache_key as string);
+      if (!plan && plan_cache_key) {
+        const cached = ctx.cache.get<{ plan: TestPlan }>(plan_cache_key);
         if (cached) plan = cached.value.plan;
       }
       // These branches must throw rather than return a partial payload: this
@@ -205,13 +217,13 @@ export const creationTools: ToolDefinition[] = [
       // typed error short-circuits that check and preserves the message.
       // See TEAI-375.
       if (!plan) {
-        if (input.plan_cache_key) {
+        if (plan_cache_key) {
           // The key was valid when tr_plan_test minted it. L1 expires after
           // 60s and L2 is per-instance, so a follow-up call that lands on
           // another server instance (streamable HTTP behind >1 task) or
           // arrives late will miss. Recoverable — say how.
           throw new NotFoundError(
-            `Plan cache_key "${String(input.plan_cache_key)}" is no longer available (expired, or minted by a different server instance). ` +
+            `Plan cache_key "${plan_cache_key}" is no longer available (expired, or minted by a different server instance). ` +
               "Re-run `tr_plan_test` for a fresh cache_key, or pass the `plan` object inline — inline plans never expire.",
           );
         }
@@ -219,6 +231,8 @@ export const creationTools: ToolDefinition[] = [
           "No plan found. Pass a `plan` object directly or a `plan_cache_key` from tr_plan_test.",
         );
       }
+      const framework = input.framework as TestPlan["framework"] | undefined;
+      if (framework && framework !== plan.framework) plan = { ...plan, framework };
       const template = TEMPLATES[plan.framework];
       if (!template) {
         throw new InvalidInputError(
@@ -229,7 +243,7 @@ export const creationTools: ToolDefinition[] = [
       // Strip any directory components a caller may have smuggled in
       // (`../`, absolute paths, drive letters) — we only ever write a bare
       // filename into the generated/ subdir, and confirm containment below.
-      const rawName = input.file_name as string | undefined;
+      const rawName = (input.file_name ?? input.file_path) as string | undefined;
       const file_name = rawName ? basename(rawName) || defaultName : defaultName;
       const outDir = join(ctx.config.outputDir, "generated");
       mkdirSync(outDir, { recursive: true });
