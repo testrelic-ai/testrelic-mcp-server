@@ -242,3 +242,95 @@ describe("no creation tool can return structured output its schema rejects", () 
     }
   });
 });
+
+describe("tr_generate_test accepts the names its neighbours use (TEAI-375, bug-bash)", () => {
+  /**
+   * The bug-bash repro chained `tr_plan_test` → `tr_generate_test` passing
+   * `cache_key`, `framework` and `file_path` — the names tr_plan_test and this
+   * tool themselves return. None were declared inputs, and the SDK strips
+   * undeclared keys before the handler runs, so a correct-looking call became
+   * "No plan found" (and, on ≤3.3.2, the raw "Output validation error").
+   *
+   * Driven through a real SDK client so that input stripping is part of the
+   * test: calling `def.handler` directly would hide it.
+   */
+  async function connectedClient() {
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const isolated = await startInProcessServer({ capabilities: ["core", "creation"] });
+    const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
+    await (isolated.__ctx as ToolContext).server.connect(serverSide);
+    const client = new Client({ name: "teai-375", version: "0" });
+    await client.connect(clientSide);
+    return { client, isolated };
+  }
+
+  type CallResult = {
+    isError?: boolean;
+    content: Array<{ text: string }>;
+    structuredContent?: Record<string, unknown>;
+  };
+
+  it("generates from the exact bug-bash call: cache_key + framework + file_path", async () => {
+    const { client, isolated } = await connectedClient();
+    try {
+      const project_id = "db9fa050-24f1-4228-a4c4-a951bc35cb5f";
+      const planned = (await client.callTool({
+        name: "tr_plan_test",
+        arguments: { project_id, goal: "Verify a user can add a product to the cart and check out" },
+      })) as CallResult;
+      const cache_key = planned.structuredContent?.cache_key as string;
+      expect(planned.content[0]?.text).toContain(`plan_cache_key: "${cache_key}"`);
+
+      const generated = (await client.callTool({
+        name: "tr_generate_test",
+        arguments: {
+          project_id,
+          cache_key,
+          framework: "playwright",
+          file_path: "tests/cart-checkout-generated.spec.ts",
+        },
+      })) as CallResult;
+
+      expect(generated.isError, generated.content[0]?.text).toBeFalsy();
+      const out = generated.structuredContent as { file_path: string; framework: string; code: string };
+      expect(out.framework).toBe("playwright");
+      // Only the base name is honoured — the file still lands under outputDir/generated/.
+      expect(out.file_path).toMatch(/[\\/]generated[\\/]cart-checkout-generated\.spec\.ts$/);
+      expect(out.code).toContain("add a product to the cart");
+    } finally {
+      await isolated.stop();
+    }
+  });
+
+  it("lets a top-level framework override the planned one", async () => {
+    const { client, isolated } = await connectedClient();
+    try {
+      const res = (await client.callTool({
+        name: "tr_generate_test",
+        arguments: { project_id: "PROJ-1", plan: PLAN, framework: "cypress", file_name: "override.cy.ts" },
+      })) as CallResult;
+
+      expect(res.isError, res.content[0]?.text).toBeFalsy();
+      expect((res.structuredContent as { framework: string }).framework).toBe("cypress");
+    } finally {
+      await isolated.stop();
+    }
+  });
+
+  it("names the stale key when the cache_key alias misses", async () => {
+    const { client, isolated } = await connectedClient();
+    try {
+      const res = (await client.callTool({
+        name: "tr_generate_test",
+        arguments: { project_id: "PROJ-1", cache_key: "tr_plan_test:v1:deadbeef" },
+      })) as CallResult;
+
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toContain("tr_plan_test:v1:deadbeef");
+      expect(res.content[0]?.text).toContain("Re-run `tr_plan_test`");
+    } finally {
+      await isolated.stop();
+    }
+  });
+});
