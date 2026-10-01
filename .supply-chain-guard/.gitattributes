@@ -1,2 +1,0 @@
-# LF everywhere: the bash wrappers break with CRLF, and P8 compares local copies byte for byte.
-* text=auto eol=lf
