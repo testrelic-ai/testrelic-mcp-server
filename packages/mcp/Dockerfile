@@ -2,7 +2,7 @@
 # Multi-stage image for @testrelic/mcp.
 # Produces a ~180MB image with native deps precompiled.
 
-FROM node:20-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 WORKDIR /app
 
 # Install toolchain for better-sqlite3 + hnswlib-node native builds.
@@ -27,7 +27,7 @@ RUN npm --workspace @testrelic/mcp run build \
     && npm --workspace @testrelic/mcp prune --omit=dev
 
 # ─── Runtime stage ─────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV MCP_IN_DOCKER=1
