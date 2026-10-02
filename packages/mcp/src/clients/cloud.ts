@@ -346,6 +346,9 @@ function countOr(payload: unknown, key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Each replay artifact costs a presigned-URL round trip; cap the fan-out. */
+const MAX_REPLAY_ARTIFACTS = 10;
+
 // ── CloudOps ────────────────────────────────────────────────────────────────
 
 export function cloudOps(client: ServiceClient) {
@@ -458,8 +461,36 @@ export function cloudOps(client: ServiceClient) {
       const rows = (r?.timeline ?? r?.steps ?? []) as Array<Record<string, unknown>>;
       return { timeline: Array.isArray(rows) ? rows : [] };
     },
-    getRunArtifacts(runId: string): Promise<{ run_id: string; artifacts: Array<{ kind: string; url: string; note?: string }> }> {
-      return client.get(`/runs/${encodeURIComponent(runId)}/artifacts`);
+    async getRunArtifacts(
+      runId: string,
+      testId?: string,
+    ): Promise<{ run_id: string; artifacts: Array<{ kind: string; url: string; note?: string }> }> {
+      // `GET /runs/:id/artifacts` is the console/network LOG feed
+      // ({ consoleLogs, networkRequests, navigations, ... }) and never carries an
+      // `artifacts` key, so reading it as one handed tr_replay_failure
+      // `undefined` and it crashed on `.map` for every run (TEAI-377). The
+      // uploaded files (trace / video / screenshot) are listed by
+      // `/artifacts/files` as `{ artifacts: [{ id, testId, type, fileName }] }`
+      // with no URL; each resolves to a presigned link via `/:artifactId/url`.
+      const base = `/runs/${encodeURIComponent(runId)}/artifacts`;
+      const r = await client.get<unknown>(`${base}/files`);
+      const rows = (collection<Record<string, unknown>>(r, "artifacts") ?? [])
+        // Never pair a test with another test's recording.
+        .filter((a) => !testId || a.testId === testId)
+        .slice(0, MAX_REPLAY_ARTIFACTS);
+      const artifacts = await Promise.all(
+        rows.map(async (a) => {
+          let url = "";
+          try {
+            const u = await client.get<{ url?: unknown }>(`${base}/${encodeURIComponent(String(a.id ?? ""))}/url`);
+            if (typeof u?.url === "string") url = u.url;
+          } catch {
+            // An artifact whose link can't be minted is left out, not fatal.
+          }
+          return { kind: String(a.type ?? "file"), url, note: a.fileName ? String(a.fileName) : undefined };
+        }),
+      );
+      return { run_id: runId, artifacts: artifacts.filter((a) => a.url) };
     },
 
     // ── Coverage / journeys ──────────────────────────────────────────────
@@ -1069,7 +1100,7 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
         })),
       };
     },
-    getRunArtifacts: (runId: string) => cloud.getRunArtifacts(runId),
+    getRunArtifacts: (runId: string, testId?: string) => cloud.getRunArtifacts(runId, testId),
     async getTestSource(_test_id: string): Promise<{ test_id: string; source: string; file: string }> {
       return { test_id: _test_id, source: "", file: "" };
     },
