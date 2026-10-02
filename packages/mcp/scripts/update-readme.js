@@ -32,6 +32,7 @@ const END_MARK = "<!-- TOOLS-END -->";
 
 function escapeCell(s) {
   return String(s ?? "")
+    .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\|")
     .replace(/\s+/g, " ")
     .trim();
