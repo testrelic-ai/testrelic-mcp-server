@@ -11,6 +11,7 @@ export function jiraOps(client: ServiceClient) {
       priority: string;
       labels: string[];
       description?: string;
+      project_key?: string;
     }): Promise<JiraTicket> {
       return client.post("/issues", body);
     },

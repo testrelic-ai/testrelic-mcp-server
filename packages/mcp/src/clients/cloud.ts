@@ -174,10 +174,12 @@ interface PlatformAmplitudeEvents {
 interface PlatformJiraIssue {
   key: string;
   summary: string;
-  status: string;
-  priority: string;
+  status?: string;
+  priority?: string;
   url: string;
   labels?: string[];
+  createdAt?: string;
+  /** Older spelling; the platform sends `createdAt`. */
   created?: string;
 }
 
@@ -239,13 +241,18 @@ function toJiraTicket(i: PlatformJiraIssue): JiraTicket {
   return {
     key: i.key,
     summary: i.summary,
-    status: i.status,
-    priority: i.priority,
+    // The platform sends slugs ("open", "in-progress", "done"); `status` is
+    // absent on a freshly created issue.
+    status: i.status ?? "open",
+    priority: i.priority ?? "",
     url: i.url,
     labels: i.labels ?? [],
-    created_at: i.created ?? new Date(0).toISOString(),
+    created_at: i.createdAt ?? i.created ?? new Date(0).toISOString(),
   };
 }
+
+/** The tool speaks P1–P4; Jira's default scheme names priorities. */
+const JIRA_PRIORITY: Record<string, string> = { P1: "Highest", P2: "High", P3: "Medium", P4: "Low" };
 
 /**
  * Read a collection out of an upstream payload WITHOUT assuming the 200 that
@@ -346,6 +353,9 @@ function countOr(payload: unknown, key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Lines fetched per Loki query; hitting it means the real total is higher. */
+const LOKI_LINE_LIMIT = 500;
+
 /** Each replay artifact costs a presigned-URL round trip; cap the fan-out. */
 const MAX_REPLAY_ARTIFACTS = 10;
 
@@ -380,8 +390,12 @@ export function cloudOps(client: ServiceClient) {
       limit?: number;
     }): Promise<PaginatedResponse<TestRun>> {
       // "project_id" is a platform repoId — falls back to /runs (org-wide).
-      const { project_id, status, ...rest } = params;
-      const page = params.cursor ? parseInt(params.cursor, 10) : 1;
+      // `cursor` here is our page number. It must not reach the platform as
+      // `cursor`: any `cursor` param switches /runs to keyset paging, where "2"
+      // decodes to no cursor and page 1 comes back with no `pagination` — so
+      // tr_recent_runs could never get past the first page.
+      const { project_id, status, cursor, ...rest } = params;
+      const page = Math.max(1, parseInt(cursor ?? "1", 10) || 1);
       const q: Record<string, unknown> = { ...rest, page };
       // The MCP RunStatus (passed|failed|running|cancelled) is a derived OUTCOME
       // for passed/failed but a lifecycle value for running. The platform filters
@@ -531,8 +545,11 @@ export function cloudOps(client: ServiceClient) {
       priority: string;
       labels: string[];
       description?: string;
-      projectKey?: string;
-    }): Promise<PlatformJiraIssue> {
+      /** Jira project key. Omit to let the platform resolve it (repo JQL, then the integration's project). */
+      project?: string;
+    }): Promise<{ issue: { id: string; key: string; url: string; summary: string } }> {
+      // Answers 201 `{ issue: { id, key, url, summary } }` — wrapped, and with
+      // no status/priority (integration-proxy.service jiraCreateIssue).
       return client.post("/integrations/jira/issues", body);
     },
 
@@ -568,6 +585,8 @@ export function cloudOps(client: ServiceClient) {
       conversationId: string;
       messages: Array<{ role: string; content: string; artifacts?: Record<string, unknown>[] }>;
       usage?: { inputTokens: number; outputTokens: number };
+      /** Set (with empty content) when the run stopped: quota, provider failure, cancel. */
+      error?: { code: string; message: string };
     }> {
       return client.post("/mcp/ai/agent", body);
     },
@@ -722,8 +741,16 @@ export function cloudOps(client: ServiceClient) {
     }> {
       return client.get("/mcp/marketplace/connections");
     },
-    validateMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
-      return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/validate`, { credentials });
+    async validateMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
+      // The platform answers `{ ok, message }`; the reason was read from `error`
+      // and lost, so every failure said only "validation failed".
+      const r = await client.post<{ ok?: unknown; message?: unknown; error?: unknown }>(
+        `/mcp/marketplace/apps/${encodeURIComponent(slug)}/validate`,
+        { credentials },
+      );
+      const ok = r?.ok === true;
+      const reason = typeof r?.message === "string" ? r.message : typeof r?.error === "string" ? r.error : undefined;
+      return ok ? { ok } : { ok, ...(reason ? { error: reason } : {}) };
     },
     connectMarketplaceApp(slug: string, credentials: Record<string, string>): Promise<{ ok: boolean; id: string }> {
       return client.post(`/mcp/marketplace/apps/${encodeURIComponent(slug)}/connect`, { credentials });
@@ -881,7 +908,8 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       const res = await cloud.getFlakiness(p.project_id, p.days ?? 7);
       // Compare fractions to fractions — the raw platform score is 0–100, the
       // tool's `threshold` input is documented 0–1.
-      const filtered = res.scores.filter((s) => toFraction(s.score) >= (p.threshold ?? 0));
+      const scores = collection<FlakinessResponse["scores"][number]>(res, "scores") ?? [];
+      const filtered = scores.filter((s) => toFraction(s.score) >= (p.threshold ?? 0));
       return {
         data: filtered.map((s) => ({
           test_id: s.testId,
@@ -896,7 +924,7 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
           known_flaky: false,
         })),
         total: filtered.length,
-        days: res.window,
+        days: countOr(res, "window", p.days ?? 7),
       };
     },
     async dismissFlakyTest(test_id: string, reason: string): Promise<{
@@ -977,39 +1005,45 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       evidence: string[];
       generated_at: string;
     }> {
-      try {
-        return await cloud.getAiRcaV2(run_id);
-      } catch {
-        return {
-          run_id,
-          root_cause: "RCA endpoint not yet available on cloud-platform-app",
-          confidence: 0,
-          affected_component: "",
-          suggested_fix: "",
-          evidence: [],
-          generated_at: new Date().toISOString(),
-        };
+      // Errors propagate on purpose: tr_ai_rca falls back to sampling when the
+      // platform has no RCA, and a placeholder "not available" at 0% here used
+      // to make that fallback unreachable.
+      const r = (await cloud.getAiRcaV2(run_id)) as unknown as Record<string, unknown>;
+      if (!r || typeof r !== "object" || typeof r.root_cause !== "string") {
+        throw new UpstreamError(`cloud returned no RCA for run ${run_id}.`, "cloud", false);
       }
+      return {
+        run_id: String(r.run_id ?? run_id),
+        root_cause: r.root_cause,
+        confidence: Number.isFinite(Number(r.confidence)) ? Number(r.confidence) : 0,
+        affected_component: String(r.affected_component ?? ""),
+        suggested_fix: String(r.suggested_fix ?? ""),
+        evidence: Array.isArray(r.evidence) ? r.evidence.map(String) : [],
+        generated_at: String(r.generated_at ?? new Date().toISOString()),
+      };
     },
     async suggestFix(run_id: string, test_name: string): Promise<{
       run_id: string;
       test_name: string;
       suggestion: { description: string; code_diff: string; affected_files: string[]; confidence: number };
     }> {
-      try {
-        return await cloud.suggestFixV2(run_id, { test_name });
-      } catch {
-        return {
-          run_id,
-          test_name,
-          suggestion: {
-            description: "suggest-fix not yet available on cloud-platform-app",
-            code_diff: "",
-            affected_files: [],
-            confidence: 0,
-          },
-        };
+      // Let the platform's reason through ("Run X not found.", "ANTHROPIC_API_KEY
+      // is not configured") instead of a placeholder that reads like a result.
+      const r = (await cloud.suggestFixV2(run_id, { test_name })) as unknown as Record<string, unknown>;
+      const s = r?.suggestion as Record<string, unknown> | undefined;
+      if (!s || typeof s !== "object") {
+        throw new UpstreamError(`cloud returned no fix suggestion for "${test_name}" in run ${run_id}.`, "cloud", false);
       }
+      return {
+        run_id,
+        test_name,
+        suggestion: {
+          description: String(s.description ?? ""),
+          code_diff: String(s.code_diff ?? ""),
+          affected_files: Array.isArray(s.affected_files) ? s.affected_files.map(String) : [],
+          confidence: Number.isFinite(Number(s.confidence)) ? Number(s.confidence) : 0,
+        },
+      };
     },
     async listJourneys(project_id: string, limit = 50): Promise<{ data: UserJourney[]; total: number }> {
       // Best-effort: fetch journeys from the repo-navigation payload.
@@ -1110,7 +1144,16 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
 export function legacyAmplitudeAdapter(cloud: CloudOps) {
   return {
     async getUserCount(run_id: string): Promise<AmplitudeUserCount> {
-      const res = await cloud.amplitudeEvents({ eventType: "error" }).catch(() => ({ eventType: "error", points: [] as Array<{ date: string; count: number }> }));
+      // Without start/end the platform defaults to 20250101–20251231, so the
+      // count had nothing to do with the run. Ask for the run's own days.
+      const ymd = (iso: string) => iso.slice(0, 10).replace(/-/g, "");
+      const run = await cloud.getRun(run_id).catch(() => null);
+      const window = run?.started_at
+        ? { start: ymd(run.started_at), end: ymd(run.finished_at || new Date().toISOString()) }
+        : {};
+      const res = await cloud
+        .amplitudeEvents({ eventType: "error", ...window })
+        .catch(() => ({ eventType: "error", points: [] as Array<{ date: string; count: number }> }));
       const points = collection<{ date: string; count: number }>(res, "points") ?? [];
       const total = points.reduce((s, p) => s + p.count, 0);
       const peak = points.reduce((a, b) => (a.count > b.count ? a : b), { date: new Date().toISOString(), count: 0 });
@@ -1162,9 +1205,14 @@ export function legacyLokiAdapter(cloud: CloudOps) {
   return {
     async queryRange(query: string, time_range?: string): Promise<LokiQueryResponse> {
       const now = Date.now();
-      const hoursMatch = time_range?.match(/(\d+)h/);
-      const hours = hoursMatch ? parseInt(hoursMatch[1]!, 10) : 24;
-      const start = new Date(now - hours * 3600 * 1000).toISOString();
+      // Only "Nh" used to parse: "7d" or "30m" silently became 24h while the
+      // output still said "7d". Unparseable input falls back to 24h and is
+      // labelled as such.
+      const UNIT_MS: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+      const m = time_range?.trim().match(/^(\d+)\s*([mhdw])$/i);
+      const windowLabel = m ? `${m[1]}${m[2]!.toLowerCase()}` : "24h";
+      const windowMs = m ? parseInt(m[1]!, 10) * UNIT_MS[m[2]!.toLowerCase()]! : 24 * 3_600_000;
+      const start = new Date(now - windowMs).toISOString();
       const end = new Date(now).toISOString();
       // No `.catch()` swallow here: a Loki query that did not run must not be
       // reported as a quiet production signal. `wrapUpstreamError` has already
@@ -1172,7 +1220,7 @@ export function legacyLokiAdapter(cloud: CloudOps) {
       // text ("… 404 Not Found" for an unconnected integration), and the
       // registry renders that as an isError result. `tr_user_impact` degrades
       // on its own with `.catch(() => null)`.
-      const r = await cloud.lokiLogs({ query, start, end, limit: 500 });
+      const r = await cloud.lokiLogs({ query, start, end, limit: LOKI_LINE_LIMIT });
       const raw = collection<PlatformLokiLog>(r, "lines");
       if (!raw) {
         throw new UpstreamError(
@@ -1189,13 +1237,27 @@ export function legacyLokiAdapter(cloud: CloudOps) {
         service: String(l.labels?.service ?? "unknown"),
         message: l.message,
       }));
-      const peak = lines.length;
+      // Loki gives lines, not a rate: there is no denominator for a percentage.
+      // `error_rate_peak` used to be the line count, which tools printed ×100
+      // as a percent ("50000.00%"). Report the busiest minute instead.
+      const perMinute = new Map<string, number>();
+      for (const l of lines) {
+        const minute = String(l.timestamp).slice(0, 16);
+        perMinute.set(minute, (perMinute.get(minute) ?? 0) + 1);
+      }
+      let peakMinute = "";
+      let peakCount = 0;
+      for (const [minute, n] of perMinute) {
+        if (n > peakCount) [peakMinute, peakCount] = [minute, n];
+      }
       return {
         query,
-        time_range: time_range ?? `${hours}h`,
-        error_rate_peak: peak,
-        peak_time: lines[0]?.timestamp ?? new Date().toISOString(),
+        time_range: windowLabel,
+        error_rate_peak: 0,
+        peak_per_minute: peakCount,
+        peak_time: peakMinute ? `${peakMinute}:00Z` : new Date(now).toISOString(),
         total_errors: countOr(r, "total", lines.length),
+        truncated: lines.length >= LOKI_LINE_LIMIT,
         log_lines: lines,
       };
     },
@@ -1214,9 +1276,20 @@ export function legacyJiraAdapter(cloud: CloudOps) {
       priority: string;
       labels: string[];
       description?: string;
+      project_key?: string;
     }): Promise<JiraTicket> {
-      const issue = await cloud.jiraCreateIssue(body);
-      return toJiraTicket(issue);
+      const priority = JIRA_PRIORITY[body.priority] ?? body.priority;
+      const r = await cloud.jiraCreateIssue({
+        summary: body.summary,
+        priority,
+        // Jira rejects labels containing whitespace.
+        labels: body.labels.map((l) => l.trim().replace(/\s+/g, "-")).filter(Boolean),
+        description: body.description,
+        ...(body.project_key ? { project: body.project_key } : {}),
+      });
+      const issue = (r as { issue?: PlatformJiraIssue }).issue ?? (r as unknown as PlatformJiraIssue);
+      if (!issue?.key) throw new UpstreamError("cloud created no Jira issue (response had no issue key).", "cloud", false);
+      return toJiraTicket({ ...issue, status: issue.status ?? "open", priority: issue.priority ?? priority });
     },
   };
 }

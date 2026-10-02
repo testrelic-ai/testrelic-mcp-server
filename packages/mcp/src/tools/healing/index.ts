@@ -17,10 +17,12 @@ export const healingTools: ToolDefinition[] = [
     capability: "healing",
     title: "Healer — propose a patch for a failing run",
     description:
-      "Analyses a failing run's stack trace, error message, and test source, then proposes a patch (unified diff) to stabilise the test. Typical fixes: brittle-selector swap, timeout bump, flakiness gate, or assertion correction.",
+      "Analyses a failing run's stack trace, error message, and test source, then proposes a patch (unified diff) to stabilise the test. Typical fixes: brittle-selector swap, timeout bump, flakiness gate, or assertion correction. Pass the test file's `source` (the platform does not store test source); without it the tool returns the failure details and asks for it.",
     inputSchema: {
       run_id: z.string(),
       test_id: z.string().optional().describe("Focus on one failing test. Defaults to the first failure."),
+      source: z.string().optional().describe("Current contents of the failing test's file, read from the local checkout"),
+      file_path: z.string().optional().describe("Repo-relative path of that file, used in the diff header"),
     },
     outputSchema: {
       patch: z
@@ -44,14 +46,35 @@ export const healingTools: ToolDefinition[] = [
       const target = input.test_id ? failures.find((f) => f.test_id === input.test_id) : failures[0];
       if (!target) throw new NotFoundError(`Test ${input.test_id} not found in failures for ${run_id}`);
 
-      let source = "";
-      let file = `tests/${target.suite}.spec.ts`;
-      try {
-        const src = await ctx.clients.testrelic.getTestSource(target.test_id);
-        source = src.source;
-        file = src.file;
-      } catch {
-        source = `// Source not available for ${target.test_id}`;
+      // `suite` is already the spec file ("auth.spec.ts"); the old default
+      // appended ".spec.ts" again.
+      let file = (input.file_path as string | undefined) || target.suite || `${target.test_id}.spec.ts`;
+      let source = (input.source as string | undefined) ?? "";
+      if (!source.trim()) {
+        const src = await ctx.clients.testrelic.getTestSource(target.test_id).catch(() => null);
+        if (src?.source?.trim()) {
+          source = src.source;
+          file = src.file || file;
+        }
+      }
+      // The platform has no test-source endpoint, so this used to diff a model
+      // "replacement" against an empty file named "" — a patch from nothing.
+      if (!source.trim()) {
+        const text = [
+          `## Healing needs the test source — ${run_id} / ${target.test_name}`,
+          `**Error:** ${target.error_type}: ${target.error_message}`,
+          target.suite ? `**Spec file:** \`${target.suite}\`` : "",
+          "",
+          "The platform does not store test source. Read the spec file from your checkout and call " +
+            "`tr_heal_run` again with `source` (and `file_path`) to get a patch.",
+          "",
+          "```",
+          target.stack_trace,
+          "```",
+        ]
+          .filter((l) => l !== "")
+          .join("\n");
+        return { text, structured: {} };
       }
 
       const prompt = [
@@ -168,8 +191,11 @@ export const healingTools: ToolDefinition[] = [
         artifacts = [];
       }
       let commitSha: string | undefined;
+      let framework: string | undefined;
       try {
-        commitSha = (await ctx.clients.testrelic.getRun(run_id)).commit_sha || undefined;
+        const run = await ctx.clients.testrelic.getRun(run_id);
+        commitSha = run.commit_sha || undefined;
+        framework = run.framework;
       } catch {
         commitSha = undefined;
       }
@@ -186,7 +212,7 @@ export const healingTools: ToolDefinition[] = [
           ? `1. Checkout the commit: \`git checkout ${commitSha}\``
           : `1. Checkout the commit the run was recorded against (the run has no commit sha).`,
         `2. Open artefacts (below) to understand the failing step.`,
-        `3. Re-run locally with the test id filter: e.g. \`pw test -g "${target.test_name}"\`.`,
+        `3. Re-run just this test locally: \`${rerunCommand(framework, target.test_name, target.suite || undefined)}\`.`,
         `4. Compare runtime state against the failing video timestamp.`,
         "",
         "### Artefacts",
@@ -198,6 +224,30 @@ export const healingTools: ToolDefinition[] = [
     },
   },
 ];
+
+/**
+ * A copy-pasteable command that re-runs one test. The title filter is a regex
+ * in every supported runner, and the whole thing goes through a shell, so the
+ * title is regex-escaped and then single-quoted. Only the leaf title is used:
+ * the platform joins the describe path with " > " (and Playwright adds the
+ * project and file), which no runner's title filter matches verbatim.
+ */
+export function rerunCommand(framework: string | undefined, testName: string, specFile?: string): string {
+  const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const leaf = testName.split(" > ").pop()?.trim() || testName;
+  const quoted = shellQuote(leaf.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  switch ((framework ?? "").toLowerCase()) {
+    case "cypress":
+      // Cypress has no title filter without a plugin; narrow by spec instead.
+      return specFile ? `npx cypress run --spec ${shellQuote(specFile)}` : "npx cypress run";
+    case "jest":
+      return `npx jest -t ${quoted}`;
+    case "vitest":
+      return `npx vitest run -t ${quoted}`;
+    default:
+      return `npx playwright test -g ${quoted}`;
+  }
+}
 
 function fallbackHeal(source: string, errorType: string): string {
   // Very conservative: bump timeouts, swap brittle selectors to testid pattern.

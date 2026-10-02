@@ -87,7 +87,13 @@ export async function withRetry<T>(
     } catch (err) {
       lastErr = err;
       const retriable = err instanceof TestRelicMcpError ? err.retriable : true;
-      if (!retriable || attempt === maxRetries) {
+      if (!retriable) {
+        // A 4xx or a deliberate "not available" means the service answered;
+        // counting it would let five bad run ids open the circuit and block
+        // every other tool for the cooldown.
+        throw err;
+      }
+      if (attempt === maxRetries) {
         breaker?.recordFailure(service);
         throw err;
       }

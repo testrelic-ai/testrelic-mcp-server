@@ -1,7 +1,7 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig } from "axios";
 import PQueue from "p-queue";
 import type { ResolvedConfig } from "../config.js";
-import { wrapUpstreamError } from "../errors.js";
+import { UpstreamError, wrapUpstreamError } from "../errors.js";
 import { CircuitBreaker, withRetry } from "./retry.js";
 
 /**
@@ -49,12 +49,25 @@ export class ServiceClient {
         return withRetry(
           this.service,
           async () => {
+            let res;
             try {
-              const { data } = await this.axios.request<T>(cfg);
-              return data;
+              res = await this.axios.request<T>(cfg);
             } catch (err) {
               throw wrapUpstreamError(err, this.service);
             }
+            // The platform's CDN rewrites 403/404 into a 200 carrying the web
+            // app's index.html. Handing that string to a caller that expects
+            // JSON is how `undefined.map` crashes happen (TEAI-376, TEAI-377).
+            const contentType = String(res.headers?.["content-type"] ?? "");
+            if (typeof res.data === "string" && (/text\/html/i.test(contentType) || /^\s*<(!doctype|html)/i.test(res.data))) {
+              throw new UpstreamError(
+                `${this.service} returned a web page instead of JSON for ${cfg.method ?? "GET"} ${cfg.url}. ` +
+                  "The endpoint or resource most likely does not exist (the CDN serves the app shell for 403/404).",
+                this.service,
+                false,
+              );
+            }
+            return res.data;
           },
           { maxRetries: 3, baseDelayMs: 250 },
           this.breaker,

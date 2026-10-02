@@ -25,7 +25,7 @@ export const impactTools: ToolDefinition[] = [
       affected_node_count: z.number(),
       touched_test_count: z.number(),
       risk_score: z.number(),
-      risk_level: z.enum(["low", "medium", "high", "critical"]),
+      risk_level: z.enum(["low", "medium", "high", "critical", "unknown"]),
     },
     handler: async (input, ctx) => {
       const project_id = input.project_id as string;
@@ -47,9 +47,11 @@ export const impactTools: ToolDefinition[] = [
       const touchedJourneys = journeys.filter((j) => touchedJourneyIds.has(j.id));
       const usersAtRisk = touchedJourneys.reduce((s, j) => s + (j.user_count ?? 0), 0);
       const totalUsers = journeys.reduce((s, j) => s + (j.user_count ?? 0), 0) || 1;
-      const risk_score = Math.min(1, usersAtRisk / totalUsers + Math.min(0.3, files.length * 0.02));
-      const risk_level: DiffAnalysis["risk_level"] =
-        risk_score >= 0.7 ? "critical" : risk_score >= 0.4 ? "high" : risk_score >= 0.15 ? "medium" : "low";
+      const missing = missingCoverage(codeMap, testMap, journeys);
+      const risk_score = missing ? 0 : Math.min(1, usersAtRisk / totalUsers + Math.min(0.3, files.length * 0.02));
+      const risk_level: DiffAnalysis["risk_level"] = missing
+        ? "unknown"
+        : risk_score >= 0.7 ? "critical" : risk_score >= 0.4 ? "high" : risk_score >= 0.15 ? "medium" : "low";
 
       const analysis: DiffAnalysis = {
         changed_files: files,
@@ -67,7 +69,9 @@ export const impactTools: ToolDefinition[] = [
         `**Affected code nodes:** ${affected.length}`,
         `**Touched tests:** ${touchedTests.length}`,
         `**Touched journeys:** ${touchedJourneys.length} (${usersAtRisk.toLocaleString()} users)`,
-        `**Risk:** ${risk_level.toUpperCase()} (${(risk_score * 100).toFixed(0)}%)`,
+        missing
+          ? `**Risk:** UNKNOWN — ${missing}`
+          : `**Risk:** ${risk_level.toUpperCase()} (${(risk_score * 100).toFixed(0)}%)`,
         "",
         "### Changed files",
         ...files.map((f) => `- \`${f}\``),
@@ -189,6 +193,15 @@ export const impactTools: ToolDefinition[] = [
       for (const t of testMap) if (t.code_node_ids.some((id) => affectedIds.has(id))) for (const j of t.journey_ids) touchedJourneyIds.add(j);
       const touchedUsers = journeys.filter((j) => touchedJourneyIds.has(j.id)).reduce((s, j) => s + (j.user_count ?? 0), 0);
       const totalUsers = journeys.reduce((s, j) => s + (j.user_count ?? 0), 0) || 1;
+      // With no coverage data every diff scored 0% and read as LOW — a false
+      // all-clear for a go/no-go signal. Say we can't tell instead.
+      const missing = missingCoverage(codeMap, testMap, journeys);
+      if (missing) {
+        return {
+          text: `**Risk:** UNKNOWN — ${missing}`,
+          structured: { risk_score: 0, risk_level: "unknown", touched_users: 0, total_users: 0 },
+        };
+      }
       const score = Math.min(1, touchedUsers / totalUsers);
       const level = score >= 0.7 ? "critical" : score >= 0.4 ? "high" : score >= 0.15 ? "medium" : "low";
       return {
@@ -198,6 +211,25 @@ export const impactTools: ToolDefinition[] = [
     },
   },
 ];
+
+/**
+ * Why a risk score can't be computed for this project, or null if it can.
+ * Scoring needs all three links: code → tests → journeys with user counts.
+ * Missing any of them made every diff score ~0% — "LOW" — which is a false
+ * all-clear rather than a measurement.
+ */
+export function missingCoverage(
+  codeMap: Array<unknown>,
+  testMap: Array<{ code_node_ids: string[]; journey_ids: string[] }>,
+  journeys: Array<{ user_count?: number }>,
+): string | null {
+  if (!codeMap.length) return "no code map for this project, so changed files can't be tied to tests.";
+  if (!testMap.some((t) => t.code_node_ids.length && t.journey_ids.length)) {
+    return "no test coverage map linking tests to code and journeys for this project.";
+  }
+  if (!journeys.some((j) => (j.user_count ?? 0) > 0)) return "no user counts on this project's journeys.";
+  return null;
+}
 
 function diffFiles(diff?: string): string[] {
   if (!diff) return [];

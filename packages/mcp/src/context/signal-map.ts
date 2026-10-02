@@ -12,8 +12,10 @@ import type { LokiLogLine } from "../types/index.js";
 export interface SignalBucket {
   service: string;
   error_rate_peak: number;
+  peak_per_minute?: number;
   peak_time: string;
   total_errors: number;
+  truncated?: boolean;
   log_lines: LokiLogLine[];
   time_range: string;
 }
@@ -34,8 +36,10 @@ export class SignalMap {
     const bucket: SignalBucket = {
       service: data.log_lines[0]?.service ?? "unknown",
       error_rate_peak: data.error_rate_peak,
+      peak_per_minute: data.peak_per_minute,
       peak_time: data.peak_time,
       total_errors: data.total_errors,
+      truncated: data.truncated,
       log_lines: data.log_lines,
       time_range: data.time_range,
     };
