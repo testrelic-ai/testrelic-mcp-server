@@ -96,7 +96,7 @@ plugin installs but the server cannot make calls.
 - Runtime dependencies are pinned in `packages/mcp/package.json` with
   caret ranges and reviewed on every release.
 - `optionalDependencies` (native modules such as `better-sqlite3`,
-  `hnswlib-node`, `tree-sitter*`, `@huggingface/transformers`) fall back to
+  `hnswlib-node`, `tree-sitter*`, `@xenova/transformers`) fall back to
   pure-JS equivalents at runtime. The plugin works without any native
   module installed.
 - Every release is scanned with `npm audit` and GitHub Dependabot prior
