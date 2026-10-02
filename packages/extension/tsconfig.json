@@ -3,8 +3,8 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "composite": true,
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "lib": ["ES2022"],
