@@ -29,10 +29,33 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
-  # 0. Resolve environment
+  # 0a. Supply-chain guard
+  # ───────────────────────────────────────────────────────────────────────
+  # Stage deploys on every push, so whatever lands on the branch is built and
+  # run with the stage AWS role. Nothing below may assume that role, build an
+  # image or touch ECS until the guard
+  # (testrelic-ai/supply-chain-guard, pinned by commit SHA) passes on the
+  # pushed tree. The guard job itself gets a read-only token and no OIDC.
+  guard:
+    name: Supply-chain guard (deploy gate)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0              # commit-provenance needs the history
+          persist-credentials: false  # no token left in .git/config
+      - uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
+        with:
+          mode: ${{ github.event_name == 'push' && 'push' || 'full' }}
+
+  # ───────────────────────────────────────────────────────────────────────
+  # 0b. Resolve environment
   # ───────────────────────────────────────────────────────────────────────
   resolve-environment:
     runs-on: ubuntu-latest
+    needs: [guard]
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
     steps:
@@ -45,16 +68,16 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────
   build-and-push-image:
     runs-on: ubuntu-latest
-    needs: [resolve-environment]
+    needs: [guard, resolve-environment]
     environment: ${{ needs.resolve-environment.outputs.environment }}
     outputs:
       image-tag: ${{ steps.meta.outputs.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ vars.GH_ACTIONS_ROLE_ARN }}
           role-session-name: GitHubActionsMcpDeploy
@@ -62,19 +85,19 @@ jobs:
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
       - name: Set image tag
         id: meta
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker
 
       - name: Build and push MCP image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: packages/mcp/Dockerfile
@@ -88,14 +111,14 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────
   deploy-mcp:
     runs-on: ubuntu-latest
-    needs: [resolve-environment, build-and-push-image]
+    needs: [guard, resolve-environment, build-and-push-image]
     environment: ${{ needs.resolve-environment.outputs.environment }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ vars.GH_ACTIONS_ROLE_ARN }}
           role-session-name: GitHubActionsMcpEcsDeploy
@@ -103,7 +126,7 @@ jobs:
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
       - name: Render updated task definition
         id: render-task

@@ -9,12 +9,21 @@ name: Security Gate
 # existing gates are not blind by accident -- they are looking for different
 # things -- but nothing was looking for this shape, so nothing found it.
 #
-# Two checks, both cheap, both structural:
-#   1. supply-chain  -- scan the tree for implant shape (see scripts/supply-chain-scan.sh)
-#   2. commit-provenance -- refuse a commit that claims to be a merge but isn't
+# Both jobs now run the canonical guard, testrelic-ai/supply-chain-guard, pinned
+# to a commit SHA. The checks execute from that pinned commit, so a pull request
+# cannot weaken them by editing a script in this repository (the old in-repo
+# scanner could be edited by the very commit it was meant to catch).
+#   1. Supply-chain scan  -- injected-payload scan (P1-P8) and lockfile /
+#                            registry / install-script / workflow lint (S1-S7)
+#   2. Commit provenance  -- C1-C3: a commit whose subject claims a merge must
+#                            have 2 parents (how e94a26e reached main unseen),
+#                            GitHub- or bot-committed commits must carry a
+#                            signature GitHub verifies, no forged force-push replicas
+# Exceptions live in .supply-chain-guard.allow, one reviewed entry per line.
 #
-# Make BOTH required in the branch ruleset for `main`, otherwise this is
-# decoration: a check that can be ignored did not gate anything.
+# The job names "Supply-chain scan" and "Commit provenance" are required status
+# checks in the `main` ruleset: do not rename them. The full guard, all three
+# tools in one job, runs as "Supply-chain guard" (supply-chain-guard.yml).
 
 on:
   pull_request:
@@ -32,81 +41,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false  # no token left in .git/config
 
-      - name: Scan tracked source for implant shape
-        run: bash scripts/supply-chain-scan.sh
+      - name: Scan tracked files, lockfiles, registry config and workflows
+        uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
+        with:
+          mode: full   # no commit range here; provenance is the job below
+          checks: P1,P2,P2b,P3,P4,P5,P5b,P6,P7,P8,S1,S2,S3,S4,S5,S6,S7
 
   commit-provenance:
     name: Commit provenance
     runs-on: ubuntu-latest
     # Only meaningful for a PR, where there is a base..head range to inspect.
+    # Pushes are covered by the "Supply-chain guard" job in push mode.
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Need real history to read parents; the default shallow clone cannot.
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Refuse commits that impersonate a merge
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          # The implant reached `main` in e94a26e, a commit whose subject was
-          # "Merge pull request #69 from ..." but which had exactly ONE parent.
-          # GitHub does not produce that shape: a real merge has two parents, and
-          # a squash/rebase merge does not carry a "Merge pull request" subject.
-          # Because it presented as a merge, the payload appeared in NO PR diff
-          # and passed review unseen.
-          #
-          # This is the cheapest possible check for that trick.
-
-          # Scope: only the commits this PR actually INTRODUCES, i.e. those not
-          # already reachable from the default branch.
-          #
-          # Without this exclusion the check is unsatisfiable for any PR that
-          # merges the default branch into another branch. PR #76 (aligning
-          # `stage` with `main`) made all 28 of main's commits newly reachable
-          # from `stage`, so the check re-flagged e94a26e -- immutable history,
-          # already on main, unfixable from a PR. It blocked a PR whose entire
-          # purpose was removing the payload.
-          #
-          # This does not weaken the gate for PRs INTO the default branch: there
-          # the new commits are by definition not yet on it, so all of them are
-          # still inspected.
-          git fetch --no-tags --quiet origin \
-            "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null || true
-
-          FAILED=0
-          if git rev-parse -q --verify "refs/remotes/origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
-            COMMITS=$(git rev-list "$BASE_SHA..$HEAD_SHA" --not "refs/remotes/origin/${DEFAULT_BRANCH}")
-            SCOPE="$BASE_SHA..$HEAD_SHA (excluding commits already on ${DEFAULT_BRANCH})"
-          else
-            # Fail safe: if the default branch cannot be resolved, inspect
-            # everything rather than silently checking nothing.
-            COMMITS=$(git rev-list "$BASE_SHA..$HEAD_SHA")
-            SCOPE="$BASE_SHA..$HEAD_SHA (default branch unavailable - inspecting all)"
-          fi
-          COUNT=$(echo "$COMMITS" | grep -c . || true)
-          echo "inspecting $COUNT commit(s) in $SCOPE"
-
-          for c in $COMMITS; do
-            SUBJECT=$(git log -1 --format=%s "$c")
-            NPARENTS=$(git log -1 --format=%P "$c" | wc -w)
-            case "$SUBJECT" in
-              "Merge pull request"*|"Merge branch"*|"Merge remote-tracking"*)
-                if [ "$NPARENTS" -ne 2 ]; then
-                  echo "::error::$c claims to be a merge (\"$SUBJECT\") but has $NPARENTS parent(s), not 2. This is how an implant reached main in e94a26e without appearing in any PR diff."
-                  FAILED=1
-                fi
-                ;;
-            esac
-          done
-
-          if [ "$FAILED" -eq 0 ]; then
-            echo "commit provenance: clean"
-          fi
-          exit "$FAILED"
+      - name: Check the provenance of the commits this PR introduces
+        uses: testrelic-ai/supply-chain-guard@0560a2effa3db1886d952774b52639e940684f29 # v1
+        with:
+          mode: pr     # base.sha..head.sha of the pull request
+          checks: C1,C2,C3

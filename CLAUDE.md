@@ -168,6 +168,31 @@ npm run test          # everything
    `ai`, `marketplace`, `apps`, `artifacts`, and `memory` sections only
    appear once a maintainer rolls the README. `roll` also regenerates the
    agent skill's tool inventory and its mirrors.
+4. The supply-chain guard, at the SHA the workflows pin ("Run it locally" in the
+   testrelic-ai/supply-chain-guard README)
+   — the same checks as the required **Supply-chain guard** CI job (needs
+   bash, git and python3; runs nothing from the repo). Run it after
+   `git add`: it only reads tracked files.
+
+## Supply-chain guard (CI)
+
+Every PR and push runs `testrelic-ai/supply-chain-guard`, pinned to a commit
+SHA (`.github/workflows/supply-chain-guard.yml`, check name
+**Supply-chain guard**; `security-gate.yml` runs the same guard under the
+older required names **Supply-chain scan** and **Commit provenance**). Every
+finding fails the job. The deploy, publish and CI workflows each run their own
+copy of the guard job and `needs:` it, so nothing builds, deploys or publishes
+from a tree the guard rejects.
+
+- The guard is not copied into this repository: every workflow runs the action
+  from its pinned SHA. To upgrade it, change that SHA in every workflow together.
+- `.supply-chain-guard.allow` holds reviewed exceptions, one per line:
+  `check-id<TAB>path<TAB>fingerprint<TAB>reason`. Fix a finding before you
+  allowlist it, and give every entry a concrete reason. A stale entry fails.
+- Pin every `uses:` to a 40-hex commit SHA with a `# vN` comment. No
+  `curl | sh` in workflow steps: download, verify a checksum, then run.
+- A new dependency with an install script, or a new lifecycle script in a
+  `package.json`, fails the guard until it is reviewed and allowlisted.
 
 ## Smoke / E2E
 
