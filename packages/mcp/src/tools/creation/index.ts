@@ -4,7 +4,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
-import { TEMPLATES } from "./templates.js";
+import { TEMPLATES, commentSafe, escapeQuotes } from "./templates.js";
 import type { TestPlan } from "../../types/index.js";
 import { InvalidInputError, NotFoundError } from "../../errors.js";
 import { resolveWithinDir } from "../../util/paths.js";
@@ -279,12 +279,12 @@ export const creationTools: ToolDefinition[] = [
       if (!steps.length) {
         for (const s of plan.steps) {
           if (plan.framework === "playwright") {
-            steps.push(`// Step ${s.step}: ${s.action}`);
-            steps.push(`await test.step("${s.action.replace(/"/g, '\\"')}", async () => { /* TODO: ${s.expectation} */ });`);
+            steps.push(`// Step ${s.step}: ${commentSafe(s.action)}`);
+            steps.push(`await test.step("${escapeQuotes(s.action)}", async () => { /* TODO: ${commentSafe(s.expectation)} */ });`);
           } else if (plan.framework === "cypress") {
-            steps.push(`cy.log("${s.action.replace(/"/g, '\\"')}"); // TODO: ${s.expectation}`);
+            steps.push(`cy.log("${escapeQuotes(s.action)}"); // TODO: ${commentSafe(s.expectation)}`);
           } else {
-            steps.push(`// Step ${s.step}: ${s.action} — expect: ${s.expectation}`);
+            steps.push(`// Step ${s.step}: ${commentSafe(s.action)} — expect: ${commentSafe(s.expectation)}`);
             steps.push(`expect(true).toBe(true);`);
           }
         }
