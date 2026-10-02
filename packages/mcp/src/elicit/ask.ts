@@ -27,9 +27,15 @@ export class Elicitor {
   public async ask(opts: ElicitOptions): Promise<ElicitResult> {
     try {
       const sdkServer = (this.server as unknown as {
-        server: { elicitInput: (req: unknown) => Promise<{ action: string; content?: Record<string, unknown> }> };
+        server: {
+          elicitInput: (req: unknown) => Promise<{ action: string; content?: Record<string, unknown> }>;
+          getClientCapabilities?: () => { elicitation?: unknown } | undefined;
+        };
       }).server;
       if (!sdkServer?.elicitInput) return { kind: "unsupported" };
+      // Same reasoning as SamplingBridge: never send a request the client did
+      // not declare it can answer — it can stall the tool call for 60s.
+      if (!sdkServer.getClientCapabilities?.()?.elicitation) return { kind: "unsupported" };
       const result = await sdkServer.elicitInput({
         message: opts.message,
         requestedSchema: zodToJsonSchema(opts.schema),
