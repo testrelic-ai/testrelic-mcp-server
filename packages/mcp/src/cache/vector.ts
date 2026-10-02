@@ -4,7 +4,7 @@ import { getLogger } from "../logger.js";
 
 /**
  * L3: vector store. Prefers hnswlib-node with BAAI/bge-small-en-v1.5 embeddings
- * (via @huggingface/transformers). Falls back to a pure-JS cosine-similarity linear
+ * (via @xenova/transformers). Falls back to a pure-JS cosine-similarity linear
  * scan with a deterministic hash-based embedding when native deps are missing.
  *
  * The hash-based fallback is enough for the demo / offline-mock path — it
@@ -76,10 +76,10 @@ class TransformersEmbedder implements Embedder {
 
   public async init(): Promise<void> {
     try {
-      const mod = await import("@huggingface/transformers").catch(() => null);
+      const mod = await import("@xenova/transformers").catch(() => null);
       if (!mod) throw new Error("module missing");
       const { pipeline } = mod as { pipeline: (task: string, model: string, opts?: unknown) => Promise<(input: string | string[], opts: unknown) => Promise<{ data: Float32Array }>> };
-      this.pipeline = (await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", { dtype: "q8" })) as unknown as typeof this.pipeline;
+      this.pipeline = (await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", { quantized: true })) as unknown as typeof this.pipeline;
     } catch {
       // Leave pipeline null; caller will fall back.
       this.pipeline = null;
