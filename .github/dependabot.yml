@@ -18,11 +18,6 @@ updates:
     commit-message:
       prefix: chore
       include: scope
-    ignore:
-      # The runtime is Node 20 (Dockerfile node:20-bookworm-slim, engines >=20).
-      # Newer majors of the types let code compile against APIs prod lacks.
-      - dependency-name: "@types/node"
-        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
