@@ -1,7 +1,7 @@
 {
   "name": "@testrelic/mcp",
   "version": "3.4.2",
-  "description": "TestRelic MCP Server — cloud-wired intelligent testing context (test creation, auto-healing, coverage gaps, test impact). One token; everything else is resolved.",
+  "description": "TestRelic MCP Server \u2014 cloud-wired intelligent testing context (test creation, auto-healing, coverage gaps, test impact). One token; everything else is resolved.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -39,8 +39,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
-    "axios": "^1.7.9",
-    "diff": "^7.0.0",
+    "axios": "^1.20.0",
+    "diff": "^8.0.3",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.2",
@@ -53,7 +53,7 @@
     "zod": "^3.24.1"
   },
   "optionalDependencies": {
-    "@xenova/transformers": "^2.17.2",
+    "@huggingface/transformers": "^4.3.0",
     "better-sqlite3": "^11.7.0",
     "hnswlib-node": "^3.0.0",
     "tree-sitter": "^0.22.4",
@@ -61,14 +61,13 @@
     "tree-sitter-typescript": "^0.23.2"
   },
   "devDependencies": {
-    "@types/diff": "^7.0.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.4",
     "@types/yargs": "^17.0.33",
     "rimraf": "^6.0.1",
     "tsx": "^4.23.1",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.11"
   },
   "keywords": [
     "mcp",

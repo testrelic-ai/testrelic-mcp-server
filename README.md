@@ -254,7 +254,7 @@ keeps the two in sync.
 |---|---|---|
 | L1 | `lru-cache` in-process | 60 s TTL, sized by count. |
 | L2 | `better-sqlite3` (fallback: in-memory map) | 1 h–24 h TTL, namespace invalidation. |
-| L3 | `hnswlib-node` + `@xenova/transformers` BGE-small embeddings (fallback: linear scan with hash-based embedder) | Semantic search over the code map. |
+| L3 | `hnswlib-node` + `@huggingface/transformers` BGE-small embeddings (fallback: linear scan with hash-based embedder) | Semantic search over the code map. |
 | L4 | Filesystem blob store keyed by SHA256 | Large payloads referenced by `cache_key`. |
 
 On top of caching, the server uses:

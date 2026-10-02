@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { resolve, sep } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import ts from "typescript";
 import { startInProcessServer } from "../fixtures/server.js";
 import { ALL_TOOLS } from "../../packages/mcp/src/tools/index.js";
 import { buildAllowList, isLoopbackHost } from "../../packages/mcp/src/transport/http.js";
 import { resolveWithinDir } from "../../packages/mcp/src/util/paths.js";
+import { commentSafe, escapeQuotes } from "../../packages/mcp/src/tools/creation/templates.js";
 
 const PLAN = {
   goal: "Login flow",
@@ -207,5 +209,51 @@ describe("security: http DNS-rebinding allow-list (TEAI-280)", () => {
     expect(isLoopbackHost("0.0.0.0")).toBe(false);
     expect(isLoopbackHost("mcp.internal")).toBe(false);
     expect(isLoopbackHost("10.0.0.5")).toBe(false);
+  });
+});
+
+/**
+ * CodeQL js/incomplete-sanitization — plan text is interpolated into generated
+ * test source. Escaping only `"` let a trailing backslash (or a newline) break
+ * out of the string literal, so a hostile plan could inject code into the spec.
+ */
+describe("security: generated test source escaping", () => {
+  const HOSTILE = [
+    String.raw`ends with a backslash \\`,
+    String.raw`\"); process.exit(1); ("`,
+    "two\nlines\r\nhere",
+    "closes */ a comment",
+  ];
+
+  it("escapeQuotes round-trips through a double-quoted literal", () => {
+    for (const s of HOSTILE) expect(JSON.parse(`"${escapeQuotes(s)}"`)).toBe(s);
+  });
+
+  it("commentSafe stays on one line inside a block comment", () => {
+    for (const s of HOSTILE) {
+      const out = commentSafe(s);
+      expect(out).not.toMatch(/[\r\n]/);
+      expect(out).not.toContain("*/");
+    }
+  });
+
+  it("tr_generate_test emits syntactically valid source for a hostile plan", async () => {
+    const srv = await startInProcessServer({ capabilities: ["creation"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_generate_test")!;
+      for (const framework of ["playwright", "cypress", "vitest"] as const) {
+        const plan = {
+          goal: HOSTILE[0]!,
+          framework,
+          steps: HOSTILE.map((s, i) => ({ step: i + 1, action: s, expectation: HOSTILE[(i + 1) % HOSTILE.length]! })),
+        };
+        const res = await tool.handler({ project_id: "PROJ-1", plan, file_name: `hostile-${framework}.ts` }, srv.__ctx);
+        const { file_path } = res.structured as { file_path: string };
+        const out = ts.transpileModule(readFileSync(file_path, "utf-8"), { reportDiagnostics: true });
+        expect(out.diagnostics ?? []).toEqual([]);
+      }
+    } finally {
+      await srv.stop();
+    }
   });
 });

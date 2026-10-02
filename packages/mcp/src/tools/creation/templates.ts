@@ -66,6 +66,16 @@ ${steps.map((s) => `    ${s}`).join("\n")}
   },
 };
 
-function escapeQuotes(s: string): string {
-  return s.replace(/"/g, '\\"');
+/**
+ * Escapes `s` for the inside of a double-quoted JS string literal. JSON's
+ * escaping covers backslashes, quotes and control characters (newlines), so a
+ * test name can't terminate the literal or the line it sits on.
+ */
+export function escapeQuotes(s: string): string {
+  return JSON.stringify(s).slice(1, -1);
+}
+
+/** Flattens `s` onto one line and splits any comment terminator, so it stays inside a comment. */
+export function commentSafe(s: string): string {
+  return s.replace(/\s+/g, " ").replace(/\*\//g, "* /");
 }
