@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UpstreamError } from "../../errors.js";
 import type { ToolDefinition } from "../../registry/index.js";
 
 /**
@@ -125,9 +126,17 @@ export const aiTools: ToolDefinition[] = [
         runId: input.runId as string | undefined,
         maxToolRounds: input.maxToolRounds as number | undefined,
       });
-      const assistant = r.messages.filter((m) => m.role === "assistant").pop();
-      const text = assistant?.content ?? "_(no assistant reply)_";
-      return { text, structured: r };
+      const assistant = (r.messages ?? []).filter((m) => m.role === "assistant").pop();
+      const reply = assistant?.content?.trim() ? assistant.content : "";
+      // The platform answers 200 with a top-level `error` (quota, provider
+      // failure, cancelled run) and empty content; dropping it returned a
+      // blank answer with no reason.
+      if (r.error) {
+        const reason = `Ask AI stopped: ${r.error.message}${r.error.code ? ` (${r.error.code})` : ""}`;
+        if (!reply) throw new UpstreamError(reason, "cloud", false);
+        return { text: `${reply}\n\n_${reason}_`, structured: r };
+      }
+      return { text: reply || "_(no assistant reply)_", structured: r };
     },
   },
   {
@@ -223,12 +232,18 @@ export const aiTools: ToolDefinition[] = [
     },
     handler: async (_input, ctx) => {
       const r = await ctx.clients.cloud.getAiUsage();
-      const pct = r.monthlyTokenBudget > 0 ? ((r.monthlyTokenUsage / r.monthlyTokenBudget) * 100).toFixed(1) : "n/a";
+      // The platform's /mcp/ai/usage always sends a budget of 0 ("not
+      // reported"); printing "Budget: 0 tokens" read as "you have none".
+      const budgetKnown = r.monthlyTokenBudget > 0;
       const text = [
         `## Ask-AI usage (current month)`,
         ``,
-        `- **Used:** ${r.monthlyTokenUsage.toLocaleString()} tokens (${pct}% of budget)`,
-        `- **Budget:** ${r.monthlyTokenBudget.toLocaleString()} tokens`,
+        budgetKnown
+          ? `- **Used:** ${r.monthlyTokenUsage.toLocaleString()} tokens (${((r.monthlyTokenUsage / r.monthlyTokenBudget) * 100).toFixed(1)}% of budget)`
+          : `- **Used:** ${r.monthlyTokenUsage.toLocaleString()} tokens`,
+        budgetKnown
+          ? `- **Budget:** ${r.monthlyTokenBudget.toLocaleString()} tokens`
+          : `- **Budget:** not reported by the platform — see Usage & plan in the web app`,
         `- **Requests:** ${r.monthlyRequestCount}`,
         `- **Over limit:** ${r.overLimit ? "yes" : "no"}`,
       ].join("\n");

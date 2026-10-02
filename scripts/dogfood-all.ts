@@ -196,10 +196,21 @@ async function main(): Promise<number> {
       journey_id: journeyId,
       goal: "cover the top uncovered journey",
     });
-    const planKey = s<{ plan_cache_key?: string }>(plan).plan_cache_key;
+    // tr_plan_test returns the key as `cache_key`. Reading `plan_cache_key`
+    // here fell through to a string `plan`, which schema validation would
+    // reject before a real client ever reached the handler.
+    const planKey = s<{ cache_key?: string }>(plan).cache_key;
     await callTool(srv, "tr_generate_test", {
       project_id: projectId,
-      ...(planKey ? { plan_cache_key: planKey } : { plan: "1. open page\n2. assert title" }),
+      ...(planKey
+        ? { plan_cache_key: planKey }
+        : {
+            plan: {
+              goal: "open the page and check its title",
+              framework: "playwright",
+              steps: [{ step: 1, action: "open page", expectation: "title is visible" }],
+            },
+          }),
     });
 
     // tr_dry_run_test contains the path to outputDir (TEAI-271), so the spec

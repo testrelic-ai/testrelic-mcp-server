@@ -94,9 +94,14 @@ export interface LokiLogLine {
 export interface LokiQueryResponse {
   query: string;
   time_range: string;
+  /** A 0–1 rate where the source has one (legacy Loki upstream); 0 when it doesn't. */
   error_rate_peak: number;
+  /** Matching lines in the busiest minute — set when there is no rate to report. */
+  peak_per_minute?: number;
   peak_time: string;
   total_errors: number;
+  /** True when the line cap was hit, so `total_errors` is a floor. */
+  truncated?: boolean;
   log_lines: LokiLogLine[];
 }
 
@@ -245,7 +250,8 @@ export interface DiffAnalysis {
   touched_tests: Array<{ test_id: string; reason: string }>;
   touched_journeys: Array<{ journey_id: string; user_count: number }>;
   risk_score: number;
-  risk_level: "low" | "medium" | "high" | "critical";
+  /** "unknown" when the project has no coverage data to score against. */
+  risk_level: "low" | "medium" | "high" | "critical" | "unknown";
 }
 
 export interface TestSelection {

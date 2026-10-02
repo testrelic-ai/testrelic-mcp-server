@@ -330,17 +330,24 @@ export const triageTools: ToolDefinition[] = [
     description: "Creates or returns an existing Jira ticket for a run. Populates with RCA and user impact when available.",
     inputSchema: {
       run_id: z.string(),
-      project_key: z.string().optional().default("ENG"),
+      project_key: z
+        .string()
+        .optional()
+        .describe("Jira project key. Omit to use the project from the repo's Jira scope or the integration"),
       priority: z.enum(["P1", "P2", "P3", "P4"]).optional().default("P2"),
       dry_run: z.boolean().optional().default(false),
     },
     aliases: [{ name: "testrelic_create_jira_ticket", description: "Create or dedupe a Jira ticket for a run." }],
     handler: async (input, ctx) => {
       const run_id = input.run_id as string;
-      const project_key = (input.project_key as string | undefined) ?? "ENG";
+      const project_key = input.project_key as string | undefined;
       const priority = (input.priority as string | undefined) ?? "P2";
       const dry_run = input.dry_run as boolean | undefined;
-      const existing = (await ctx.clients.jira.findIssuesByLabel(run_id)).issues.filter((t) => t.status !== "Done");
+      // The platform sends status slugs ("done"), so an exact "Done" match
+      // never excluded closed tickets and they were returned as duplicates.
+      const existing = (await ctx.clients.jira.findIssuesByLabel(run_id)).issues.filter(
+        (t) => !/^(done|closed|resolved)$/i.test(String(t.status ?? "")),
+      );
       if (existing.length > 0) {
         const t = existing[0]!;
         return {
@@ -383,7 +390,7 @@ export const triageTools: ToolDefinition[] = [
           structured: { dry_run: true, summary, priority, labels, description, project_key },
         };
       }
-      const ticket = await ctx.clients.jira.createIssue({ summary, priority, labels, description });
+      const ticket = await ctx.clients.jira.createIssue({ summary, priority, labels, description, project_key });
       return {
         text: [
           `## Jira created — ${ticket.key}`,

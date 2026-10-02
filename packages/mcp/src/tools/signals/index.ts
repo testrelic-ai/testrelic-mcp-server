@@ -7,14 +7,47 @@ import type { ToolContext, ToolDefinition } from "../../registry/index.js";
  * user-impact tools 1:1.
  */
 
+/**
+ * "Peak" as the source actually knows it. Loki through the platform has lines,
+ * not a rate, so that path reports its busiest minute; printing the old
+ * line-count ×100 as a percent produced figures like "50000.00%".
+ */
+function describePeak(b: {
+  error_rate_peak: number;
+  peak_per_minute?: number;
+  peak_time: string;
+  total_errors: number;
+  truncated?: boolean;
+}): string {
+  const total = `${b.total_errors.toLocaleString()}${b.truncated ? "+" : ""}`;
+  const peak =
+    b.peak_per_minute !== undefined
+      ? `${b.peak_per_minute.toLocaleString()} lines/min`
+      : `${(b.error_rate_peak * 100).toFixed(2)}%`;
+  return `**Peak:** ${peak} @ ${b.peak_time} · **Matching lines:** ${total}`;
+}
+
+/** Hours from the run's start to now, so a log window covers the run. */
+function hoursSince(iso: string | undefined): string {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return "24h";
+  return `${Math.min(720, Math.max(1, Math.ceil((Date.now() - t) / 3_600_000)))}h`;
+}
+
 export const signalsTools: ToolDefinition[] = [
   {
     name: "tr_user_impact",
     capability: "signals",
     title: "Correlate a run with user impact",
     description:
-      "Pulls Amplitude affected-user counts and Loki error-rate for a failing run. Returns the business-level blast radius so the agent can prioritise.",
-    inputSchema: { run_id: z.string() },
+      "Pulls Amplitude error-event counts for the run's dates and, given a LogQL `log_query`, matching Loki lines since the run started. Returns the business-level blast radius so the agent can prioritise.",
+    inputSchema: {
+      run_id: z.string(),
+      log_query: z
+        .string()
+        .optional()
+        .describe('LogQL for the service under test, e.g. `{service="checkout"} |= "error"`. Omit to skip Loki.'),
+    },
     aliases: [{ name: "testrelic_correlate_user_impact", description: "Correlate run failures with user impact." }],
     outputSchema: {
       affected_users: z.number(),
@@ -27,17 +60,23 @@ export const signalsTools: ToolDefinition[] = [
         ctx.clients.testrelic.getRun(run_id),
         ctx.clients.amplitude.getUserCount(run_id),
       ]);
-      const loki = await ctx.clients.loki
-        .queryRange(`{service="checkout"} |= "timeout"`, "24h")
-        .catch(() => null);
+      // This used to query `{service="checkout"} |= "timeout"` for every org —
+      // someone else's service name, so the "error rate" was unrelated noise.
+      const log_query = input.log_query as string | undefined;
+      const loki = log_query
+        ? await ctx.clients.loki.queryRange(log_query, hoursSince(run.started_at)).catch(() => null)
+        : null;
       const text = [
         `## User impact — ${run_id}`,
         "",
         `**Run:** ${run.status} · ${run.failed} failures`,
-        `**Users affected:** ${users.affected_users.toLocaleString()} at \`${users.error_path}\` (peak ${users.peak_time})`,
+        `**Amplitude error events (run dates):** ${users.affected_users.toLocaleString()}` +
+          `${users.error_path ? ` at \`${users.error_path}\`` : ""} (peak ${users.peak_time})`,
         loki
-          ? `**Error-rate peak:** ${(loki.error_rate_peak * 100).toFixed(2)}% @ ${loki.peak_time} (${loki.total_errors.toLocaleString()} events)`
-          : "_Loki unavailable — no error rate signal._",
+          ? `**Loki** \`${log_query}\` since the run started — ${describePeak(loki)}`
+          : log_query
+            ? "_Loki unavailable — no log signal._"
+            : "_No `log_query` given — pass the LogQL for the service under test to add a Loki signal._",
       ].join("\n");
       return {
         text,
@@ -59,7 +98,7 @@ export const signalsTools: ToolDefinition[] = [
     description: "Ad-hoc Loki LogQL query over a time window. Results are trimmed and cached (5 min TTL).",
     inputSchema: {
       query: z.string().describe("Loki LogQL query, e.g. `{service=\"checkout\"} |= \"timeout\"`"),
-      time_range: z.string().optional().describe("e.g. 1h / 24h / 7d"),
+      time_range: z.string().optional().describe("Window ending now: <n>m, <n>h, <n>d or <n>w (e.g. 30m, 24h, 7d). Default 24h"),
       max_lines: z.number().int().optional().default(100),
     },
     aliases: [{ name: "testrelic_get_production_signal", description: "Query Loki for a production signal." }],
@@ -68,7 +107,7 @@ export const signalsTools: ToolDefinition[] = [
       const maxLines = (input.max_lines as number | undefined) ?? 100;
       const lines = [
         `## Loki — \`${input.query}\``,
-        `**Window:** ${bucket.time_range} · **Peak:** ${(bucket.error_rate_peak * 100).toFixed(2)}% @ ${bucket.peak_time} · **Total errors:** ${bucket.total_errors.toLocaleString()}`,
+        `**Window:** ${bucket.time_range} · ${describePeak(bucket)}`,
         "",
         "```log",
         ...bucket.log_lines.slice(0, maxLines).map((l) => `${l.timestamp} [${l.level}] ${l.service} ${l.message}`),
