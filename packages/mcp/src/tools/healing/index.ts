@@ -161,10 +161,17 @@ export const healingTools: ToolDefinition[] = [
       if (!target) return { text: `No failure to replay in ${run_id}.`, structured: {} };
       let artifacts: Array<{ kind: string; url: string; note?: string }> = [];
       try {
-        const res = await ctx.clients.testrelic.getRunArtifacts(run_id);
-        artifacts = res.artifacts;
+        const res = await ctx.clients.testrelic.getRunArtifacts(run_id, target.test_id);
+        // A body without an `artifacts` array must not crash the plan (TEAI-377).
+        artifacts = Array.isArray(res?.artifacts) ? res.artifacts : [];
       } catch {
         artifacts = [];
+      }
+      let commitSha: string | undefined;
+      try {
+        commitSha = (await ctx.clients.testrelic.getRun(run_id)).commit_sha || undefined;
+      } catch {
+        commitSha = undefined;
       }
       if (target.video_url && !artifacts.find((a) => a.kind === "video")) {
         artifacts.push({ kind: "video", url: target.video_url, note: `seek to ${target.video_timestamp_ms}ms` });
@@ -175,13 +182,17 @@ export const healingTools: ToolDefinition[] = [
       const text = [
         `## Replay plan — ${run_id} / ${target.test_name}`,
         "",
-        `1. Checkout the commit: \`git checkout ${(await ctx.clients.testrelic.getRun(run_id)).commit_sha}\``,
+        commitSha
+          ? `1. Checkout the commit: \`git checkout ${commitSha}\``
+          : `1. Checkout the commit the run was recorded against (the run has no commit sha).`,
         `2. Open artefacts (below) to understand the failing step.`,
         `3. Re-run locally with the test id filter: e.g. \`pw test -g "${target.test_name}"\`.`,
         `4. Compare runtime state against the failing video timestamp.`,
         "",
         "### Artefacts",
-        ...artifacts.map((a) => `- [${a.kind}](${a.url})${a.note ? ` — ${a.note}` : ""}`),
+        ...(artifacts.length
+          ? artifacts.map((a) => `- [${a.kind}](${a.url})${a.note ? ` — ${a.note}` : ""}`)
+          : ["_No uploaded artefacts for this test._"]),
       ].join("\n");
       return { text, structured: { run_id, test: target, artifacts } };
     },
