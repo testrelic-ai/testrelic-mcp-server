@@ -104,7 +104,10 @@ export function testrelicOps(client: ServiceClient) {
       return client.get(`/projects/${project_id}/coverage-gaps`, { limit });
     },
     /** v2: artefact fetch for replay (video url, trace url, step-level log). */
-    getRunArtifacts(run_id: string): Promise<{ run_id: string; artifacts: Array<{ kind: string; url: string; note?: string }> }> {
+    getRunArtifacts(
+      run_id: string,
+      _test_id?: string,
+    ): Promise<{ run_id: string; artifacts: Array<{ kind: string; url: string; note?: string }> }> {
       return client.get(`/runs/${run_id}/artifacts`);
     },
     /** v2: test source by test_id. */
