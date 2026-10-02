@@ -206,6 +206,43 @@ router.get("/runs/:runId/timeline", (req: Request, res: Response) => {
   res.json({ steps, total: steps.length, runId: req.params.runId });
 });
 
+// ── /api/v1/runs/:runId/artifacts ──────────────────────────────────────────
+// The platform's console/network LOG feed — it has no `artifacts` key. Served
+// here so a client that mistakes it for the file list fails in mock mode the
+// way it failed against prod (TEAI-377), instead of 404ing into a catch.
+router.get("/runs/:runId/artifacts", (_req: Request, res: Response) => {
+  res.json({ consoleLogs: [], networkRequests: [], navigations: [], cursor: null, hasMore: false, total: 0 });
+});
+
+// ── /api/v1/runs/:runId/artifacts/files ────────────────────────────────────
+// Uploaded files as `{ artifacts: [{ id, testId, type, fileName, ... }] }`,
+// with no URL (artifact.controller listRunArtifactFiles).
+function mockArtifactFiles(runId: string) {
+  return (mockFailures[runId]?.failures ?? []).flatMap((f) => [
+    ...(f.video_url ? [{ id: `${f.test_id}-video`, testId: f.test_id, type: "video", fileName: "video.webm", url: f.video_url }] : []),
+    { id: `${f.test_id}-trace`, testId: f.test_id, type: "trace", fileName: "trace.zip", url: `https://mock-trace.testrelic.local/${runId}/${f.test_id}.trace.zip` },
+  ]);
+}
+router.get("/runs/:runId/artifacts/files", (req: Request, res: Response) => {
+  const artifacts = mockArtifactFiles(req.params.runId).map(({ url: _url, ...row }) => ({
+    ...row,
+    contentType: row.type === "video" ? "video/webm" : "application/zip",
+    sizeBytes: 0,
+    createdAt: new Date(0).toISOString(),
+  }));
+  res.json({ artifacts });
+});
+
+// ── /api/v1/runs/:runId/artifacts/:artifactId/url ──────────────────────────
+router.get("/runs/:runId/artifacts/:artifactId/url", (req: Request, res: Response) => {
+  const hit = mockArtifactFiles(req.params.runId).find((a) => a.id === req.params.artifactId);
+  if (!hit) {
+    res.status(404).json({ error: { code: "NOT_FOUND", message: "Artifact not found" } });
+    return;
+  }
+  res.json({ url: hit.url });
+});
+
 // ── /api/v1/repos/:repoId/runs/:runId/tests ────────────────────────────────
 router.get("/repos/:repoId/runs/:runId/tests", (req: Request, res: Response) => {
   const { runId } = req.params;
