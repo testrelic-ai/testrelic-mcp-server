@@ -369,7 +369,10 @@ export const triageTools: ToolDefinition[] = [
       const rcaData = await ctx.clients.testrelic.getAiRca(run_id).catch(() => null);
       const userImpact = await ctx.clients.amplitude.getUserCount(run_id).catch(() => null);
       const topFailure = failuresData.failures[0];
-      const summary = `[TestRelic] ${topFailure?.suite ?? "unknown"} ${topFailure?.error_type ?? "failures"} — ${run_id}`;
+      // `suite` is "" (not undefined) when the platform has no spec file, so `??`
+      // left a double space in the summary and an empty Jira label.
+      const where = topFailure?.suite || topFailure?.test_name || "unknown";
+      const summary = `[TestRelic] ${where} ${topFailure?.error_type ?? "failures"} — ${run_id}`;
       const descParts = [
         `*Automatically created by TestRelic MCP Server.*`,
         "",
@@ -377,13 +380,18 @@ export const triageTools: ToolDefinition[] = [
         `*Failures:* ${failuresData.failures.length} / ${run.total}`,
         `*Time:* ${run.started_at}`,
       ];
-      if (userImpact) descParts.push(`*Users impacted:* ${userImpact.affected_users.toLocaleString()} at ${userImpact.error_path}`);
+      if (userImpact && userImpact.affected_users > 0) {
+        descParts.push(
+          `*Amplitude error events (run dates):* ${userImpact.affected_users.toLocaleString()}` +
+            (userImpact.error_path ? ` at ${userImpact.error_path}` : ""),
+        );
+      }
       if (rcaData) descParts.push("", `*Root cause (${(rcaData.confidence * 100).toFixed(0)}%):* ${rcaData.root_cause}`, `*Suggested fix:* ${rcaData.suggested_fix}`);
       if (topFailure) {
         descParts.push("", `*Primary failure:* ${topFailure.test_name}`, `{code}${topFailure.stack_trace}{code}`);
       }
       const description = descParts.join("\n");
-      const labels = ["testrelic", run_id, topFailure?.suite ?? "unknown"];
+      const labels = ["testrelic", run_id, ...(topFailure?.suite ? [topFailure.suite] : [])];
       if (dry_run) {
         return {
           text: ["## Dry run — ticket preview", "", `**Summary:** ${summary}`, `**Priority:** ${priority}`, `**Labels:** ${labels.join(", ")}`, "", "**Description:**", description].join("\n"),

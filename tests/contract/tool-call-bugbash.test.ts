@@ -304,3 +304,124 @@ describe("tr_risk_score / tr_analyze_diff / tr_heal_run", () => {
     expect(res.structured).toEqual({});
   });
 });
+
+// ── Second pass: found by re-checking the fixes on hosted mcp-stage ──────────
+
+describe("failure text from the platform", () => {
+  it("strips terminal colour codes and the message's own type prefix (was 'Error: Error: [2mexpect(…')", async () => {
+    // Verbatim shape of a real stage Playwright failure.
+    const ESC = "\u001b";
+    const tr = legacyTestRelicAdapter(
+      cloudOps(
+        stub({
+          "/runs/r1/timeline": {
+            steps: [
+              {
+                status: "failed",
+                testId: "t1",
+                testTitle: "Expect toMatch",
+                errorMessage: `Error: ${ESC}[2mexpect(${ESC}[22m${ESC}[31mreceived${ESC}[39m${ESC}[2m).${ESC}[22mtoMatch`,
+                stackTrace: `${ESC}[31mat auth.spec.ts:12${ESC}[39m`,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    const [f] = (await tr.getRunFailures("r1")).failures;
+    expect(f!.error_type).toBe("Error");
+    expect(f!.error_message).toBe("expect(received).toMatch");
+    expect(f!.stack_trace).toBe("at auth.spec.ts:12");
+  });
+
+  it("keeps a specific error type from the message (TimeoutError)", async () => {
+    const tr = legacyTestRelicAdapter(
+      cloudOps(stub({ "/runs/r1/timeline": { steps: [{ status: "failed", testId: "t", testTitle: "x", errorMessage: "TimeoutError: page.goto: 30000ms" }] } })),
+    );
+    const [f] = (await tr.getRunFailures("r1")).failures;
+    expect(f!.error_type).toBe("TimeoutError");
+    expect(f!.error_message).toBe("page.goto: 30000ms");
+  });
+});
+
+describe("tr_create_jira with no spec file", () => {
+  it("names the test instead of leaving a double space, and adds no empty label", async () => {
+    const ctx = {
+      clients: {
+        jira: { findIssuesByLabel: async () => ({ issues: [], total: 0 }) },
+        testrelic: legacyTestRelicAdapter(
+          cloudOps(
+            stub({
+              "/runs/r1": RUN,
+              "/runs/r1/timeline": { steps: [{ status: "failed", testId: "t1", testTitle: "pays", errorMessage: "boom" }] },
+              "/mcp/runs/r1/rca": new Error("x"),
+            }),
+          ),
+        ),
+        amplitude: { getUserCount: async () => ({ run_id: "r1", affected_users: 0, peak_time: "", error_path: "" }) },
+      },
+    } as unknown as ToolContext;
+    const res = await tool("tr_create_jira").handler({ run_id: "r1", priority: "P2", dry_run: true }, ctx);
+    const s = res.structured as { summary: string; labels: string[]; description: string };
+    expect(s.summary).toBe("[TestRelic] pays Error — r1");
+    expect(s.labels).toEqual(["testrelic", "r1"]);
+    // Zero Amplitude events are left out rather than printed as "0 at ".
+    expect(s.description).not.toContain("Amplitude");
+  });
+});
+
+describe("no data means no peak", () => {
+  it("Amplitude with zero events reports no peak time (was the time of the call)", async () => {
+    const amp = legacyAmplitudeAdapter(cloudOps(stub({ "/runs/r1": RUN, "/integrations/amplitude/events": { eventType: "error", points: [] } })));
+    expect((await amp.getUserCount("r1")).peak_time).toBe("");
+  });
+
+  it("Loki with no matching lines says so instead of inventing a peak", async () => {
+    const ctx = {
+      context: {
+        signals: {
+          forPattern: async () => ({ service: "unknown", error_rate_peak: 0, peak_per_minute: 0, peak_time: "", total_errors: 0, log_lines: [], time_range: "24h" }),
+        },
+      },
+    } as unknown as ToolContext;
+    const res = await tool("tr_production_signal").handler({ query: '{app="x"}' }, ctx);
+    expect(res.text).toContain("**Peak:** none");
+  });
+});
+
+describe("coverage tools against the platform's real data", () => {
+  // Real AggregatedEdge rows: URL transitions seen in test runs, passRate a whole percent.
+  const NAV = {
+    nodes: [],
+    edges: [
+      { id: "e1", sourceUrl: "/login", targetUrl: "/home", transitionCount: 40, avgTransitionTime: 900, passRate: 95 },
+      { id: "e2", sourceUrl: "/home", targetUrl: "/cart", transitionCount: 12, avgTransitionTime: 400, passRate: 1 },
+    ],
+  };
+
+  it("listJourneys maps sourceUrl/targetUrl/transitionCount/passRate (was 'path-N' with 0 users and no steps)", async () => {
+    const tr = legacyTestRelicAdapter(cloudOps(stub({ "/repos/p1/navigation": NAV })));
+    const { data } = await tr.listJourneys("p1");
+    expect(data[0]).toMatchObject({ id: "e1", name: "/login → /home", events: ["/login", "/home"], transition_count: 40, pass_rate: 0.95 });
+    // A real 1% must not read as 100%.
+    expect(data[1]!.pass_rate).toBeCloseTo(0.01);
+  });
+
+  it("tr_user_journeys labels test-run paths as such, not '0 users · 0 sessions'", async () => {
+    const tr = legacyTestRelicAdapter(cloudOps(stub({ "/repos/p1/navigation": NAV })));
+    const ctx = { context: { journeys: { top: async () => (await tr.listJourneys("p1")).data } } } as unknown as ToolContext;
+    const res = await tool("tr_user_journeys").handler({ project_id: "p1" }, ctx);
+    expect(res.text).toContain("tested navigation paths");
+    expect(res.text).toContain("**/login → /home** — 40 transitions in tests · 95% passed");
+    expect(res.text).not.toContain("0 users");
+  });
+
+  it("tr_coverage_report / tr_coverage_gaps / tr_test_map say coverage is unavailable instead of reporting 0%", async () => {
+    const ctx = { context: { coverage: { load: async () => [] } } } as unknown as ToolContext;
+    const report = await tool("tr_coverage_report").handler({ project_id: "p1" }, ctx);
+    expect(report.text).toContain("Coverage not available");
+    expect((report.structured as { coverage_available: boolean }).coverage_available).toBe(false);
+    expect((await tool("tr_coverage_gaps").handler({ project_id: "p1" }, ctx)).text).toContain("Coverage not available");
+    expect((await tool("tr_test_map").handler({ project_id: "p1" }, ctx)).text).toContain("Coverage not available");
+  });
+});

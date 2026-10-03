@@ -20,6 +20,7 @@ function describePeak(b: {
   truncated?: boolean;
 }): string {
   const total = `${b.total_errors.toLocaleString()}${b.truncated ? "+" : ""}`;
+  if (!b.peak_time) return `**Peak:** none — no matching lines · **Matching lines:** ${total}`;
   const peak =
     b.peak_per_minute !== undefined
       ? `${b.peak_per_minute.toLocaleString()} lines/min`
@@ -71,7 +72,7 @@ export const signalsTools: ToolDefinition[] = [
         "",
         `**Run:** ${run.status} · ${run.failed} failures`,
         `**Amplitude error events (run dates):** ${users.affected_users.toLocaleString()}` +
-          `${users.error_path ? ` at \`${users.error_path}\`` : ""} (peak ${users.peak_time})`,
+          `${users.error_path ? ` at \`${users.error_path}\`` : ""}${users.peak_time ? ` (peak ${users.peak_time})` : ""}`,
         loki
           ? `**Loki** \`${log_query}\` since the run started — ${describePeak(loki)}`
           : log_query
@@ -86,7 +87,7 @@ export const signalsTools: ToolDefinition[] = [
           loki,
           affected_users: users.affected_users,
           error_rate_peak: loki?.error_rate_peak ?? 0,
-          peak_time: loki?.peak_time,
+          peak_time: loki?.peak_time || undefined,
         },
       };
     },
