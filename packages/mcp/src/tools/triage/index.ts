@@ -330,17 +330,24 @@ export const triageTools: ToolDefinition[] = [
     description: "Creates or returns an existing Jira ticket for a run. Populates with RCA and user impact when available.",
     inputSchema: {
       run_id: z.string(),
-      project_key: z.string().optional().default("ENG"),
+      project_key: z
+        .string()
+        .optional()
+        .describe("Jira project key. Omit to use the project from the repo's Jira scope or the integration"),
       priority: z.enum(["P1", "P2", "P3", "P4"]).optional().default("P2"),
       dry_run: z.boolean().optional().default(false),
     },
     aliases: [{ name: "testrelic_create_jira_ticket", description: "Create or dedupe a Jira ticket for a run." }],
     handler: async (input, ctx) => {
       const run_id = input.run_id as string;
-      const project_key = (input.project_key as string | undefined) ?? "ENG";
+      const project_key = input.project_key as string | undefined;
       const priority = (input.priority as string | undefined) ?? "P2";
       const dry_run = input.dry_run as boolean | undefined;
-      const existing = (await ctx.clients.jira.findIssuesByLabel(run_id)).issues.filter((t) => t.status !== "Done");
+      // The platform sends status slugs ("done"), so an exact "Done" match
+      // never excluded closed tickets and they were returned as duplicates.
+      const existing = (await ctx.clients.jira.findIssuesByLabel(run_id)).issues.filter(
+        (t) => !/^(done|closed|resolved)$/i.test(String(t.status ?? "")),
+      );
       if (existing.length > 0) {
         const t = existing[0]!;
         return {
@@ -362,7 +369,10 @@ export const triageTools: ToolDefinition[] = [
       const rcaData = await ctx.clients.testrelic.getAiRca(run_id).catch(() => null);
       const userImpact = await ctx.clients.amplitude.getUserCount(run_id).catch(() => null);
       const topFailure = failuresData.failures[0];
-      const summary = `[TestRelic] ${topFailure?.suite ?? "unknown"} ${topFailure?.error_type ?? "failures"} — ${run_id}`;
+      // `suite` is "" (not undefined) when the platform has no spec file, so `??`
+      // left a double space in the summary and an empty Jira label.
+      const where = topFailure?.suite || topFailure?.test_name || "unknown";
+      const summary = `[TestRelic] ${where} ${topFailure?.error_type ?? "failures"} — ${run_id}`;
       const descParts = [
         `*Automatically created by TestRelic MCP Server.*`,
         "",
@@ -370,20 +380,25 @@ export const triageTools: ToolDefinition[] = [
         `*Failures:* ${failuresData.failures.length} / ${run.total}`,
         `*Time:* ${run.started_at}`,
       ];
-      if (userImpact) descParts.push(`*Users impacted:* ${userImpact.affected_users.toLocaleString()} at ${userImpact.error_path}`);
+      if (userImpact && userImpact.affected_users > 0) {
+        descParts.push(
+          `*Amplitude error events (run dates):* ${userImpact.affected_users.toLocaleString()}` +
+            (userImpact.error_path ? ` at ${userImpact.error_path}` : ""),
+        );
+      }
       if (rcaData) descParts.push("", `*Root cause (${(rcaData.confidence * 100).toFixed(0)}%):* ${rcaData.root_cause}`, `*Suggested fix:* ${rcaData.suggested_fix}`);
       if (topFailure) {
         descParts.push("", `*Primary failure:* ${topFailure.test_name}`, `{code}${topFailure.stack_trace}{code}`);
       }
       const description = descParts.join("\n");
-      const labels = ["testrelic", run_id, topFailure?.suite ?? "unknown"];
+      const labels = ["testrelic", run_id, ...(topFailure?.suite ? [topFailure.suite] : [])];
       if (dry_run) {
         return {
           text: ["## Dry run — ticket preview", "", `**Summary:** ${summary}`, `**Priority:** ${priority}`, `**Labels:** ${labels.join(", ")}`, "", "**Description:**", description].join("\n"),
           structured: { dry_run: true, summary, priority, labels, description, project_key },
         };
       }
-      const ticket = await ctx.clients.jira.createIssue({ summary, priority, labels, description });
+      const ticket = await ctx.clients.jira.createIssue({ summary, priority, labels, description, project_key });
       return {
         text: [
           `## Jira created — ${ticket.key}`,

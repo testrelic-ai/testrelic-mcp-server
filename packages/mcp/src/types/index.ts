@@ -94,9 +94,14 @@ export interface LokiLogLine {
 export interface LokiQueryResponse {
   query: string;
   time_range: string;
+  /** A 0–1 rate where the source has one (legacy Loki upstream); 0 when it doesn't. */
   error_rate_peak: number;
+  /** Matching lines in the busiest minute — set when there is no rate to report. */
+  peak_per_minute?: number;
   peak_time: string;
   total_errors: number;
+  /** True when the line cap was hit, so `total_errors` is a floor. */
+  truncated?: boolean;
   log_lines: LokiLogLine[];
 }
 
@@ -180,6 +185,10 @@ export interface UserJourney {
   user_count: number;
   /** Sessions in the last 30 days. */
   session_count: number;
+  /** Times tests walked this path (platform navigation graph — tests, not users). */
+  transition_count?: number;
+  /** Share (0–1) of those test transitions that passed. */
+  pass_rate?: number;
   /** Critical property names used to disambiguate similar event chains. */
   critical_props?: string[];
   sample_session_ids?: string[];
@@ -245,7 +254,8 @@ export interface DiffAnalysis {
   touched_tests: Array<{ test_id: string; reason: string }>;
   touched_journeys: Array<{ journey_id: string; user_count: number }>;
   risk_score: number;
-  risk_level: "low" | "medium" | "high" | "critical";
+  /** "unknown" when the project has no coverage data to score against. */
+  risk_level: "low" | "medium" | "high" | "critical" | "unknown";
 }
 
 export interface TestSelection {

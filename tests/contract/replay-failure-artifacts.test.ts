@@ -3,6 +3,7 @@ import { cloudOps, legacyTestRelicAdapter } from "../../packages/mcp/src/clients
 import { ALL_TOOLS } from "../../packages/mcp/src/tools/index.js";
 import type { ToolContext, ToolDefinition } from "../../packages/mcp/src/registry/index.js";
 import type { ServiceClient } from "../../packages/mcp/src/clients/http.js";
+import { rerunCommand } from "../../packages/mcp/src/tools/healing/index.js";
 
 /**
  * Regression (TEAI-377): `tr_replay_failure` crashed on every run that had a
@@ -128,5 +129,27 @@ describe("cloud getRunArtifacts", () => {
   it("treats a body with no artifacts array as no files", async () => {
     const cloud = cloudOps(stubClient({ "/runs/r1/artifacts/files": LOG_FEED }));
     expect((await cloud.getRunArtifacts("r1")).artifacts).toEqual([]);
+  });
+});
+
+describe("tr_replay_failure re-run command", () => {
+  // Both titles are real stage failures whose command came out broken:
+  // `pw test -g "Expect "toMatch""` and a full " > " path no runner matches.
+  it("regex-escapes and shell-quotes a title containing quotes", () => {
+    expect(rerunCommand("playwright", "Expect \"toMatch\"")).toBe("npx playwright test -g 'Expect \"toMatch\"'");
+  });
+
+  it("uses the leaf title of a describe path", () => {
+    expect(
+      rerunCommand("playwright", "discounted checkout > chromium > discounted-checkout.spec.ts > checks out (SAVE10)"),
+    ).toBe("npx playwright test -g 'checks out \\(SAVE10\\)'");
+  });
+
+  it("closes and reopens the quote around an apostrophe", () => {
+    expect(rerunCommand("vitest", "user's cart")).toBe("npx vitest run -t 'user'\\''s cart'");
+  });
+
+  it("filters Cypress by spec file, which is all it supports", () => {
+    expect(rerunCommand("cypress", "pays", "cypress/e2e/pay.cy.ts")).toBe("npx cypress run --spec 'cypress/e2e/pay.cy.ts'");
   });
 });
