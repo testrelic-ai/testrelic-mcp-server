@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { resolve, sep } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import ts from "typescript";
+// TypeScript 7 is the native compiler and ships no JS API (no
+// `ts.transpileModule`), so parse the generated source with esbuild: it throws
+// on any syntax error, which is all this check needs.
+import { transformSync } from "esbuild";
 import { startInProcessServer } from "../fixtures/server.js";
 import { ALL_TOOLS } from "../../packages/mcp/src/tools/index.js";
 import { buildAllowList, isLoopbackHost } from "../../packages/mcp/src/transport/http.js";
@@ -249,8 +252,8 @@ describe("security: generated test source escaping", () => {
         };
         const res = await tool.handler({ project_id: "PROJ-1", plan, file_name: `hostile-${framework}.ts` }, srv.__ctx);
         const { file_path } = res.structured as { file_path: string };
-        const out = ts.transpileModule(readFileSync(file_path, "utf-8"), { reportDiagnostics: true });
-        expect(out.diagnostics ?? []).toEqual([]);
+        const source = readFileSync(file_path, "utf-8");
+        expect(() => transformSync(source, { loader: "ts", sourcefile: file_path })).not.toThrow();
       }
     } finally {
       await srv.stop();

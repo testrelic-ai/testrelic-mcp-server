@@ -2,6 +2,19 @@ import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "../../registry/index.js";
 
 /**
+ * The platform serves no test ↔ journey ↔ code map (`/test-impact` is Amplitude
+ * impact totals, not tests), so with real data the map is empty. Every gap then
+ * read as "uncovered" and coverage as 0% — missing data presented as a result.
+ */
+function noCoverageMap(project_id: string): string {
+  return (
+    `## Coverage not available — ${project_id}\n\n` +
+    "The platform has no test-to-journey/code coverage map for this project, so coverage can't be computed. " +
+    "A 0% here would be missing data, not a measurement. `tr_user_journeys` still lists the navigation paths your tests walk."
+  );
+}
+
+/**
  * Coverage capability — the core intelligence behind the ≥95% User-Coverage
  * / ≥95% Test-Coverage goal. Every tool is cache-first and uses the 3-state
  * diff reader for repeat calls on the same project.
@@ -38,8 +51,18 @@ export const coverageTools: ToolDefinition[] = [
       if (!journeys.length) {
         return { text: `No journeys available for ${project_id}.`, structured: { journeys: [], total_users_tracked: 0 } };
       }
-      const lines = [`## Top ${journeys.length} user journeys — ${project_id}`, "", `**Total users tracked:** ${total.toLocaleString()}`, ""];
+      // The platform's paths come from test runs and carry no user counts;
+      // label them as what they are rather than "0 users · 0 sessions".
+      const testedPaths = total === 0 && journeys.some((j) => j.transition_count !== undefined);
+      const lines = testedPaths
+        ? [`## Top ${journeys.length} tested navigation paths — ${project_id}`, "", "_From test runs; no user analytics on these paths._", ""]
+        : [`## Top ${journeys.length} user journeys — ${project_id}`, "", `**Total users tracked:** ${total.toLocaleString()}`, ""];
       for (const j of journeys) {
+        if (testedPaths) {
+          const pass = j.pass_rate !== undefined ? ` · ${(j.pass_rate * 100).toFixed(0)}% passed` : "";
+          lines.push(`- **${j.name}** — ${(j.transition_count ?? 0).toLocaleString()} transitions in tests${pass}`);
+          continue;
+        }
         lines.push(`- **\`${j.id}\`** — ${j.name}`);
         lines.push(`  ${j.user_count.toLocaleString()} users · ${j.session_count.toLocaleString()} sessions · ${j.events.length} steps`);
         lines.push(`  ${j.events.join(" → ")}`);
@@ -73,6 +96,7 @@ export const coverageTools: ToolDefinition[] = [
       const project_id = input.project_id as string;
       const test_id = input.test_id as string | undefined;
       const all = await ctx.context.coverage.load(project_id);
+      if (!all.length) return { text: noCoverageMap(project_id), structured: { entries: [] } };
       const filtered = test_id ? all.filter((t) => t.test_id === test_id) : all;
       if (!filtered.length) {
         return { text: `No coverage entries found for ${project_id}${test_id ? ` / ${test_id}` : ""}.`, structured: { entries: [] } };
@@ -114,6 +138,9 @@ export const coverageTools: ToolDefinition[] = [
     handler: async (input, ctx) => {
       const project_id = input.project_id as string;
       const limit = (input.limit as number | undefined) ?? 10;
+      if (!(await ctx.context.coverage.load(project_id)).length) {
+        return { text: noCoverageMap(project_id), structured: { gaps: [] } };
+      }
       const gaps = await ctx.context.correlator.rankedGaps(project_id, limit);
       if (!gaps.length) {
         return { text: `🎉 No coverage gaps in top journeys for ${project_id}.`, structured: { gaps: [] } };
@@ -147,10 +174,18 @@ export const coverageTools: ToolDefinition[] = [
       test_coverage: z.number(),
       meets_95_user: z.boolean(),
       meets_95_test: z.boolean(),
+      /** false when the platform has no coverage map; the numbers are then not measurements. */
+      coverage_available: z.boolean().optional(),
     },
     handler: async (input, ctx) => {
       const project_id = input.project_id as string;
       const mode = (input.read_mode as string | undefined) ?? "auto";
+      if (!(await ctx.context.coverage.load(project_id)).length) {
+        return {
+          text: noCoverageMap(project_id),
+          structured: { user_coverage: 0, test_coverage: 0, meets_95_user: false, meets_95_test: false, coverage_available: false },
+        };
+      }
       const report = await ctx.context.correlator.coverageReport(project_id);
       const correlation = await ctx.context.correlator.correlate(project_id);
       const meets_user = report.user_coverage >= 0.95;

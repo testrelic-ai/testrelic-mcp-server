@@ -107,7 +107,10 @@ router.get("/repos/:repoId/runs", (req: Request, res: Response) => {
 // ── /api/v1/runs?repoId=&page= ─────────────────────────────────────────────
 router.get("/runs", (req: Request, res: Response) => {
   const repoId = String(req.query.repoId ?? "");
-  const page = Math.max(1, Number(req.query.page) || 1);
+  // Like run.controller respondRunList: ANY `cursor` selects keyset paging,
+  // and a cursor that doesn't decode starts from the top with no `pagination`.
+  const keyset = req.query.cursor !== undefined;
+  const page = keyset ? 1 : Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(50, Number(req.query.limit) || 20);
   const filtered = repoId ? mockRuns.filter((r) => r.project_id === repoId) : mockRuns;
   const start = (page - 1) * limit;
@@ -126,7 +129,7 @@ router.get("/runs", (req: Request, res: Response) => {
     summary: { passed: r.passed, failed: r.failed, skipped: r.skipped, flaky: r.flaky },
     testFramework: r.framework,
   }));
-  res.json({ runs, pagination: { page, limit, total: filtered.length } });
+  res.json(keyset ? { runs, nextCursor: null } : { runs, pagination: { page, limit, total: filtered.length } });
 });
 
 // ── /api/v1/runs/:runId ────────────────────────────────────────────────────
@@ -411,10 +414,13 @@ router.get("/integrations/status/:type", (req: Request, res: Response) => {
 });
 
 // ── /api/v1/integrations/jira/search ───────────────────────────────────────
+// Rows mirror integration-proxy.service's mapping: status/priority are SLUGS
+// ("in-progress", "done", "medium") and the date is `createdAt`. The mock used
+// Jira display names ("In Progress"), which hid the "Done" dedupe bug.
 router.get("/integrations/jira/search", (req: Request, res: Response) => {
   const q = String(req.query.q ?? "").toLowerCase();
   const issues = [
-    { key: "ENG-101", summary: "Checkout timeout investigation", status: "In Progress", priority: "P2", url: "https://mock.atlassian.net/browse/ENG-101", labels: ["regression", q], created: "2026-02-20T00:00:00Z" },
+    { id: "10101", key: "ENG-101", summary: "Checkout timeout investigation", status: "in-progress", priority: "high", issueType: "bug", project: "ENG", url: "https://mock.atlassian.net/browse/ENG-101", labels: ["regression", q], createdAt: "2026-02-20T00:00:00Z", updatedAt: "2026-02-21T00:00:00Z" },
   ];
   res.json({ issues, total: issues.length });
 });
@@ -423,16 +429,13 @@ router.get("/integrations/jira/issues", (_req: Request, res: Response) => {
   res.json({ issues: [], total: 0 });
 });
 
+// The platform answers 201 `{ issue: { id, key, url, summary } }` — wrapped,
+// with no status/priority/labels (integration-proxy.service jiraCreateIssue).
 router.post("/integrations/jira/issues", (req: Request, res: Response) => {
-  const body = (req.body ?? {}) as { summary?: string; priority?: string; labels?: string[] };
+  const body = (req.body ?? {}) as { summary?: string; project?: string };
+  const key = `${body.project ?? "MOCK"}-${Math.floor(Math.random() * 9000 + 1000)}`;
   res.status(201).json({
-    key: "MOCK-" + Math.floor(Math.random() * 9000 + 1000),
-    summary: body.summary ?? "",
-    status: "To Do",
-    priority: body.priority ?? "P3",
-    url: "https://mock.atlassian.net/browse/MOCK-1234",
-    labels: body.labels ?? [],
-    created: new Date().toISOString(),
+    issue: { id: "10001", key, url: `https://mock.atlassian.net/browse/${key}`, summary: body.summary ?? "" },
   });
 });
 
@@ -587,8 +590,9 @@ router.post("/mcp/ai/artifacts/:id/export", (req: Request, res: Response) => {
   });
 });
 
+// The platform always sends monthlyTokenBudget: 0 (mcp-ai.controller getUsage).
 router.get("/mcp/ai/usage", (_req: Request, res: Response) => {
-  res.json({ monthlyTokenUsage: 125_000, monthlyTokenBudget: 1_000_000, monthlyRequestCount: 73, overLimit: false });
+  res.json({ monthlyTokenUsage: 125_000, monthlyTokenBudget: 0, monthlyRequestCount: 73, overLimit: false });
 });
 
 // ── /api/v1/repos/:repoId/memory* (Repo Memory) ────────────────────────────
@@ -760,8 +764,12 @@ router.get("/mcp/marketplace/connections", (_req: Request, res: Response) => {
   });
 });
 
-router.post("/mcp/marketplace/apps/:slug/validate", (_req: Request, res: Response) => {
-  res.json({ ok: true });
+// `{ ok, message }` like mcp-marketplace.controller validateApp. Empty
+// credentials fail so the failure path (and its reason) is exercised too.
+router.post("/mcp/marketplace/apps/:slug/validate", (req: Request, res: Response) => {
+  const creds = (req.body?.credentials ?? {}) as Record<string, string>;
+  const ok = Object.values(creds).some((v) => String(v).trim());
+  res.json(ok ? { ok: true, message: "Credentials are valid." } : { ok: false, message: "Credentials are required." });
 });
 
 router.post("/mcp/marketplace/apps/:slug/connect", (req: Request, res: Response) => {
