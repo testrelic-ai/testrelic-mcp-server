@@ -1,7 +1,11 @@
-import { encode } from "gpt-tokenizer";
+// Pinned to cl100k_base, the encoding the token budgets and metrics baselines
+// were calibrated on. gpt-tokenizer 3.0 switched its default export to
+// o200k_base; on our payloads the two count within 0.1% of each other, so this
+// is about not letting a library default move the numbers in future.
+import { encode } from "gpt-tokenizer/encoding/cl100k_base";
 
 /**
- * Token counting using gpt-tokenizer (cl100k_base — OpenAI default encoder).
+ * Token counting using gpt-tokenizer with the cl100k_base encoding.
  *
  * This is an approximation for Anthropic / other models, but it's the
  * canonical open-source tokenizer and the usual Playwright MCP choice.
