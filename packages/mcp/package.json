@@ -44,7 +44,7 @@
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
-    "gpt-tokenizer": "^2.8.1",
+    "gpt-tokenizer": "^4.0.0",
     "lru-cache": "^11.0.2",
     "p-queue": "^8.1.0",
     "pino": "^9.6.0",
