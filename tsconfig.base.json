@@ -13,6 +13,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "noImplicitOverride": true,
+    "noUnusedLocals": true,
     "noUncheckedIndexedAccess": false,
     "allowSyntheticDefaultImports": true
   }
