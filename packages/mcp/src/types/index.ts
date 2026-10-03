@@ -185,6 +185,10 @@ export interface UserJourney {
   user_count: number;
   /** Sessions in the last 30 days. */
   session_count: number;
+  /** Times tests walked this path (platform navigation graph — tests, not users). */
+  transition_count?: number;
+  /** Share (0–1) of those test transitions that passed. */
+  pass_rate?: number;
   /** Critical property names used to disambiguate similar event chains. */
   critical_props?: string[];
   sample_session_ids?: string[];

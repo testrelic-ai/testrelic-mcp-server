@@ -286,20 +286,31 @@ const JIRA_PRIORITY: Record<string, string> = { P1: "Highest", P2: "High", P3: "
  * Platform names are read FIRST, with the legacy/mock names kept as fallbacks so
  * an older upstream (and the fixtures that mimic it) still resolve.
  */
+/** Terminal escape sequences (colours, cursor moves) that test runners leave in messages. */
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
 function toFailure(t: Record<string, unknown>): TestFailure {
   const err = t.error as Record<string, unknown> | undefined;
   const status = String(t.status ?? "").toLowerCase();
-  const message = String(t.errorMessage ?? err?.message ?? "");
+  // Playwright's messages carry terminal colour codes (`\x1b[2m…\x1b[22m`) and
+  // start with their own type ("Error: …"); shown as-is they rendered as
+  // "Error: Error: [2mexpect([22m…".
+  let message = stripAnsi(String(t.errorMessage ?? err?.message ?? ""));
+  const prefixed = message.match(/^((?:[A-Z][A-Za-z]*)?Error):\s*/);
+  if (prefixed) message = message.slice(prefixed[0].length);
   return {
     test_id: String(t.testId ?? t.id ?? ""),
     // `action` is the step label — the last resort when a row carries no test title.
     test_name: String(t.testTitle ?? t.title ?? t.name ?? t.action ?? ""),
     suite: String(t.suite ?? t.specFile ?? ""),
-    // The platform sends no error TYPE. Infer the one thing that is knowable
-    // rather than labelling a timeout "Error".
-    error_type: String(err?.type ?? (status === "timedout" ? "TimeoutError" : "Error")),
+    // The platform sends no error TYPE: take it from the message's own prefix,
+    // else infer the one thing that is knowable rather than labelling a timeout "Error".
+    error_type: String(err?.type ?? prefixed?.[1] ?? (status === "timedout" ? "TimeoutError" : "Error")),
     error_message: message,
-    stack_trace: String(t.stackTrace ?? err?.stack ?? ""),
+    stack_trace: stripAnsi(String(t.stackTrace ?? err?.stack ?? "")),
     duration_ms: Number(t.durationMs ?? t.duration ?? 0),
     retry_count: Number(t.retry ?? 0),
     video_url: "",
@@ -1051,15 +1062,31 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
       const edges = Array.isArray((nav as { edges?: unknown }).edges)
         ? ((nav as { edges: Array<Record<string, unknown>> }).edges)
         : [];
-      const data: UserJourney[] = edges.slice(0, limit).map((e, idx) => ({
-        id: String(e.id ?? `edge-${idx}`),
-        project_id,
-        name: String(e.name ?? e.from ?? `path-${idx}`),
-        events: Array.isArray(e.sequence) ? (e.sequence as string[]) : [],
-        user_count: Number(e.users ?? 0),
-        session_count: Number(e.sessions ?? 0),
-        last_seen: String(e.lastSeen ?? new Date().toISOString()),
-      }));
+      // The platform's edges are URL transitions seen IN TEST RUNS —
+      // `{ id, sourceUrl, targetUrl, transitionCount, avgTransitionTime, passRate }`
+      // (dashboard-repo.controller AggregatedEdge). Reading `name`/`sequence`/
+      // `users` instead turned every one into "path-N" with 0 users and no steps.
+      const data: UserJourney[] = edges
+        .map((e, idx) => {
+          const from = typeof e.sourceUrl === "string" ? e.sourceUrl : undefined;
+          const to = typeof e.targetUrl === "string" ? e.targetUrl : undefined;
+          const passRate = Number(e.passRate);
+          return {
+            id: String(e.id ?? `edge-${idx}`),
+            project_id,
+            name: from && to ? `${from} → ${to}` : String(e.name ?? e.from ?? `path-${idx}`),
+            events: from && to ? [from, to] : Array.isArray(e.sequence) ? (e.sequence as string[]) : [],
+            user_count: Number(e.users ?? 0),
+            session_count: Number(e.sessions ?? 0),
+            ...(e.transitionCount !== undefined ? { transition_count: Number(e.transitionCount) || 0 } : {}),
+            // passRate is a whole percentage, Math.round(passed / count * 100)
+            // (dashboard-repo.controller); store 0–1.
+            ...(Number.isFinite(passRate) ? { pass_rate: passRate / 100 } : {}),
+            last_seen: String(e.lastSeen ?? new Date().toISOString()),
+          };
+        })
+        .sort((a, b) => (b.user_count - a.user_count) || ((b.transition_count ?? 0) - (a.transition_count ?? 0)))
+        .slice(0, limit);
       return { data, total: data.length };
     },
     async getTestMap(project_id: string): Promise<{ data: TestCoverageEntry[] }> {
@@ -1156,8 +1183,10 @@ export function legacyAmplitudeAdapter(cloud: CloudOps) {
         .catch(() => ({ eventType: "error", points: [] as Array<{ date: string; count: number }> }));
       const points = collection<{ date: string; count: number }>(res, "points") ?? [];
       const total = points.reduce((s, p) => s + p.count, 0);
-      const peak = points.reduce((a, b) => (a.count > b.count ? a : b), { date: new Date().toISOString(), count: 0 });
-      return { run_id, affected_users: total, peak_time: peak.date, error_path: "" };
+      // No events means no peak; seeding the reduce with "now" reported the
+      // moment of the call as the peak time.
+      const peak = points.reduce<{ date: string; count: number } | null>((a, b) => (a && a.count >= b.count ? a : b), null);
+      return { run_id, affected_users: total, peak_time: peak && peak.count > 0 ? peak.date : "", error_path: "" };
     },
     async getSessions(run_id: string, limit = 50): Promise<{ run_id: string; sessions: AmplitudeSession[]; total: number }> {
       try {
@@ -1255,7 +1284,8 @@ export function legacyLokiAdapter(cloud: CloudOps) {
         time_range: windowLabel,
         error_rate_peak: 0,
         peak_per_minute: peakCount,
-        peak_time: peakMinute ? `${peakMinute}:00Z` : new Date(now).toISOString(),
+        // Empty when nothing matched — "now" would read as a real peak.
+        peak_time: peakMinute ? `${peakMinute}:00Z` : "",
         total_errors: countOr(r, "total", lines.length),
         truncated: lines.length >= LOKI_LINE_LIMIT,
         log_lines: lines,
