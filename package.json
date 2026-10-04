@@ -1,6 +1,6 @@
 {
   "name": "testrelic-mcp-workspace",
-  "version": "3.4.5",
+  "version": "3.4.6",
   "private": true,
   "description": "TestRelic MCP Server monorepo \u2014 main package + IDE extension. All deployment goes through GitHub Actions.",
   "type": "module",
@@ -35,7 +35,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^26.6.3",
     "concurrently": "^10.0.5",
-    "cross-env": "^7.0.3",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",
     "prettier": "^3.4.2",
     "rimraf": "^6.0.1",

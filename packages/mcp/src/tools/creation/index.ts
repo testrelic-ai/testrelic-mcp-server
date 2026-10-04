@@ -1,15 +1,12 @@
 import { z } from "zod";
-import { execFile } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { promisify } from "node:util";
 import type { ToolDefinition } from "../../registry/index.js";
 import { TEMPLATES, commentSafe, escapeQuotes } from "./templates.js";
+import { formatDryRun, resolveFramework, typeCheckFile, type DryRunFramework } from "./typecheck.js";
 import type { TestPlan } from "../../types/index.js";
 import { InvalidInputError, NotFoundError } from "../../errors.js";
 import { resolveWithinDir } from "../../util/paths.js";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Creation capability — Planner, Generator, DryRun, AssertionHelper,
@@ -306,7 +303,7 @@ export const creationTools: ToolDefinition[] = [
         code,
         "```",
         "",
-        "Next step: call `tr_dry_run_test` with this file path to verify it compiles.",
+        `Next step: call \`tr_dry_run_test\` with this file path${plan.framework === "cypress" ? ' and `framework: "cypress"`' : ""} to verify it compiles.`,
       ].join("\n");
 
       return {
@@ -321,10 +318,15 @@ export const creationTools: ToolDefinition[] = [
     capability: "creation",
     title: "Dry-run: type-check the generated file",
     description:
-      "Type-checks a generated test file with `tsc --noEmit` and returns first-pass errors so the agent can iterate before committing. Only files under the configured output directory are accepted. Note: this intentionally does NOT run `playwright test --list` — that command imports (executes) the file, which is unsafe for untrusted/generated code.",
+      "Type-checks a generated test file with `tsc --noEmit` and returns first-pass errors so the agent can iterate before committing. It runs the TypeScript already installed (the project the server runs in, else a global install; TypeScript 5, 6 and 7) with fixed options: strict, ES modules, ESNext target, bundler resolution. The project's tsconfig.json is not applied. Nothing is downloaded: with no TypeScript installed (as on the hosted server), or when the compiler cannot run or times out, the result is NO VERDICT, not FAIL. Only files under the configured output directory are accepted. Note: this intentionally does NOT run `playwright test --list` — that command imports (executes) the file, which is unsafe for untrusted/generated code.",
     inputSchema: {
       file_path: z.string().describe("Path to the generated test file (must live under the configured outputDir)"),
-      framework: z.enum(["playwright", "cypress", "jest", "vitest"]).optional().default("playwright"),
+      framework: z
+        .enum(["playwright", "cypress", "jest", "vitest"])
+        .optional()
+        .describe(
+          "Framework the file was generated for. Only `cypress` changes the check: it loads Cypress's global types (`cy`, `describe`, `it`). `*.cy.ts` files are always checked as Cypress",
+        ),
     },
     handler: async (input, ctx) => {
       const requested = input.file_path as string;
@@ -332,40 +334,18 @@ export const creationTools: ToolDefinition[] = [
       // under outputDir. Rejects `../` traversal, absolute-outside, and
       // cross-drive paths before we ever hand the path to a child process.
       const file = resolveWithinDir(ctx.config.outputDir, requested);
-      const results: { step: string; ok: boolean; output: string }[] = [];
 
-      try {
-        // `tsc --noEmit` type-checks WITHOUT importing/executing the module,
-        // so it is safe for generated code. `--yes` is intentionally dropped:
-        // in a non-interactive context npx must not silently fetch+run a
-        // package from the registry — it uses the locally installed tsc or fails.
-        const { stdout, stderr } = await execFileAsync("npx", ["tsc", "--noEmit", "--skipLibCheck", file], {
-          cwd: process.cwd(),
-          timeout: ctx.config.timeouts.analysis,
-        });
-        results.push({ step: "tsc --noEmit", ok: true, output: stdout + stderr });
-      } catch (err) {
-        const anyErr = err as { stdout?: string; stderr?: string; message?: string };
-        results.push({
-          step: "tsc --noEmit",
-          ok: false,
-          output: `${anyErr.stdout ?? ""}\n${anyErr.stderr ?? ""}\n${anyErr.message ?? ""}`.trim() || String(err),
-        });
-      }
+      // `tsc --noEmit` type-checks without executing the file. The compiler is
+      // looked up from the server's working directory and global installs,
+      // never from outputDir, whose contents a remote caller influences.
+      const check = await typeCheckFile({
+        file,
+        cwd: process.cwd(),
+        framework: resolveFramework(file, input.framework as DryRunFramework | undefined),
+        timeoutMs: ctx.config.timeouts.analysis,
+      });
 
-      const ok = results.every((r) => r.ok);
-      const text = [
-        `## Dry-run: ${ok ? "PASS" : "FAIL"}`,
-        ...results.flatMap((r) => [
-          "",
-          `### ${r.step}: ${r.ok ? "✅" : "❌"}`,
-          "```",
-          r.output.slice(0, 2_000),
-          "```",
-        ]),
-      ].join("\n");
-
-      return { text, structured: { ok, results, file } };
+      return formatDryRun(check, file);
     },
   },
   {
