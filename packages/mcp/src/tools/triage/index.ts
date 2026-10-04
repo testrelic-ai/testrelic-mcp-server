@@ -1,6 +1,5 @@
 import { z } from "zod";
-import type { ToolContext, ToolDefinition } from "../../registry/index.js";
-import { RUN_FILTER_FRAMEWORKS } from "../frameworks.js";
+import type { ToolDefinition } from "../../registry/index.js";
 
 /**
  * Triage capability — migration of the v1 tool set, plus one new entry

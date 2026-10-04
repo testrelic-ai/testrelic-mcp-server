@@ -51,7 +51,7 @@ describe("legacyLokiAdapter survives a CloudFront-masked 4xx", () => {
     await expect(loki.queryRange('{service="checkout"}', "24h")).rejects.toThrow(TestRelicMcpError);
     await expect(loki.queryRange('{service="checkout"}', "24h")).rejects.not.toThrow(TypeError);
 
-    const err = await loki.queryRange('{service="checkout"}', "24h").catch((e: Error) => e);
+    const err = (await loki.queryRange('{service="checkout"}', "24h").catch((e: Error) => e)) as Error;
     expect(err.message).not.toMatch(/reading 'map'/);
     expect(err.message).toMatch(/lines/);
     expect(err.message).toMatch(/CloudFront|not connected/i);

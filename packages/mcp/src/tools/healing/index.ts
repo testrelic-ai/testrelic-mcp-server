@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createPatch } from "diff";
-import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import type { ToolDefinition } from "../../registry/index.js";
 import type { HealingPatch } from "../../types/index.js";
 import { NotFoundError } from "../../errors.js";
 
