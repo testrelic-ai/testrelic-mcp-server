@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import type { ToolDefinition } from "../../registry/index.js";
 
 /**
  * Devtools capability — orientation tools for the engineer operating the

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parsePatch } from "diff";
-import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import type { ToolDefinition } from "../../registry/index.js";
 import type { CodeNode, DiffAnalysis, TestSelection } from "../../types/index.js";
 
 /**

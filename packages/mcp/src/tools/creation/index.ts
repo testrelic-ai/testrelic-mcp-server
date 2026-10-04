@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import type { ToolDefinition } from "../../registry/index.js";
 import { TEMPLATES, commentSafe, escapeQuotes } from "./templates.js";
 import type { TestPlan } from "../../types/index.js";
 import { InvalidInputError, NotFoundError } from "../../errors.js";
