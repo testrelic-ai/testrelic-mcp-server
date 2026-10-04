@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ToolContext, ToolDefinition } from "../../registry/index.js";
+import type { ToolDefinition } from "../../registry/index.js";
 
 /**
  * The platform serves no test ↔ journey ↔ code map (`/test-impact` is Amplitude
