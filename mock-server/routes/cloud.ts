@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Request as ExpressRequest, Response } from "express";
 import { mockRuns } from "../data/runs.js";
 import { mockFailures } from "../data/failures.js";
 import {
@@ -10,6 +10,10 @@ import {
 } from "../data/journeys.js";
 import { mockFlakyTests } from "../data/flaky-tests.js";
 import { mockLokiResponses } from "../data/loki-logs.js";
+
+// Express 5's typings widen `req.params` values to `string | string[]`. Every
+// route here uses plain named params, so narrow them back to strings.
+type Request = ExpressRequest<Record<string, string>>;
 
 /**
  * Mock implementation of the cloud-platform-app `/api/v1/*` surface the MCP
