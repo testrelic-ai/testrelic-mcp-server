@@ -117,15 +117,15 @@ describe("tr_diagnose_run declares an outputSchema and every branch satisfies it
     const res = await def.handler({ run_id: "r1" }, ctxFor({ run: { ...RUN, status: "passed" } }));
     const parsed = schema().safeParse(res.structured);
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
-    expect(res.structured?.failures).toEqual([]);
-    expect(res.structured?.flakiness).toEqual([]);
+    expect((res.structured as Record<string, unknown> | undefined)?.failures).toEqual([]);
+    expect((res.structured as Record<string, unknown> | undefined)?.flakiness).toEqual([]);
   });
 
   it("the NOT-FOUND branch parses (used to omit flakiness, and run is legitimately null)", async () => {
     const res = await def.handler({ run_id: "nope" }, ctxFor({}));
     const parsed = schema().safeParse(res.structured);
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
-    expect(res.structured?.run).toBeNull();
+    expect((res.structured as Record<string, unknown> | undefined)?.run).toBeNull();
   });
 
   it("a run missing timestamps upstream still parses (degrades the VALUE, not the result)", async () => {

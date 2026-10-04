@@ -34,7 +34,7 @@ async function serve(over: Record<string, unknown>) {
     cloud: { token: TOKEN, baseUrl: "https://example.invalid/api/v1" },
     server: { port, transport: "http", ...over },
   } as never);
-  stop = await startHttp(() => new McpServer({ name: "t", version: "0" }), config);
+  stop = await startHttp(async () => new McpServer({ name: "t", version: "0" }), config);
   return config;
 }
 
@@ -115,7 +115,7 @@ describe("http transport caller authentication", () => {
       server: { port: nextPort++, host: "0.0.0.0", transport: "http", requireAuth: true },
     } as never);
     await expect(
-      startHttp(() => new McpServer({ name: "t", version: "0" }), config),
+      startHttp(async () => new McpServer({ name: "t", version: "0" }), config),
     ).rejects.toThrow(/no cloud token is configured/i);
   });
 
