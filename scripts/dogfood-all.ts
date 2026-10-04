@@ -217,12 +217,15 @@ async function main(): Promise<number> {
     // MUST live under it — write there, not in a separate tmp dir.
     const specPath = join(srv.__ctx.config.outputDir, "dogfood.spec.ts");
     mkdirSync(srv.__ctx.config.outputDir, { recursive: true });
-    writeFileSync(
-      specPath,
-      "import { test, expect } from '@playwright/test';\n" +
-        "test('dogfood', async () => { expect(1).toBe(1); });\n",
-    );
-    await callTool(srv, "tr_dry_run_test", { file_path: "dogfood.spec.ts" });
+    // The file imports nothing: imports resolve from the file's own directory,
+    // and outputDir is outside this repo, so no framework is installed there.
+    // (It used to import @playwright/test, fail, and the row passed anyway.)
+    writeFileSync(specPath, "const title: string = 'dogfood';\nexport default title;\n");
+    await callTool(srv, "tr_dry_run_test", { file_path: "dogfood.spec.ts" }, (r) => {
+      const dry = s<{ ok?: boolean; status?: string; results?: Array<{ output?: string }> }>(r);
+      if (dry.ok === true) return undefined;
+      return `expected PASS, got ${dry.status ?? "no status"}: ${(dry.results?.[0]?.output ?? "").slice(0, 70)}`;
+    });
     await callTool(srv, "tr_generate_assertion", { step: "user sees the order confirmation page" });
 
     // ── healing ─────────────────────────────────────────────────────────
