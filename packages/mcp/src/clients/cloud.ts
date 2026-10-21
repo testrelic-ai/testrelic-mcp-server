@@ -139,15 +139,41 @@ interface PlatformTestResult {
   };
 }
 
+/**
+ * One row of `GET /repos/:repoId/runs/:runId/tests` — cloud-platform-app
+ * `TestCaseFromApi` (shared/types/run.ts), built by dashboard-repo.controller
+ * `getRunTests`. The platform folds every ATTEMPT of a test into this one row
+ * (`collapseAttempts`): `status` and `durationMs` are the FINAL attempt's.
+ *
+ * It carries `failureMessage` and no failure object, no stack, no screenshot.
+ */
+interface PlatformRunTest {
+  testId: string;
+  title: string;
+  suite: string;
+  status: string;
+  durationMs: number;
+  /** Index of the final attempt (0 = first run). */
+  retry?: number;
+  /** Retries the test took. */
+  retryCount?: number;
+  attempts?: Array<{ retry: number; status: string; durationMs: number }>;
+  /** The SDK's `failure.message`, truncated by the platform. Null when unknown,
+   *  which includes both Postgres fallbacks; null does not mean "no error". */
+  failureMessage?: string | null;
+}
+
 interface PlatformRunTests {
   runId: string;
   total: number;
   passed: number;
   failed: number;
   skipped: number;
+  /** Tests that passed on retry: part of `total`, not of `passed`. */
+  flaky?: number;
   branch?: string | null;
   commit?: string | null;
-  tests: PlatformTestResult[];
+  tests: PlatformRunTest[];
 }
 
 interface PlatformLokiLog {
@@ -292,15 +318,21 @@ function stripAnsi(s: string): string {
   return s.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
+/**
+ * Playwright's messages carry terminal colour codes (`\x1b[2m…\x1b[22m`) and
+ * start with their own type ("Error: …"); shown as-is they rendered as
+ * "Error: Error: [2mexpect([22m…". Returns the clean message and that type.
+ */
+function splitErrorMessage(raw: unknown): { message: string; type?: string } {
+  const message = stripAnsi(String(raw ?? ""));
+  const prefixed = message.match(/^((?:[A-Z][A-Za-z]*)?Error):\s*/);
+  return prefixed ? { message: message.slice(prefixed[0].length), type: prefixed[1] } : { message };
+}
+
 function toFailure(t: Record<string, unknown>): TestFailure {
   const err = t.error as Record<string, unknown> | undefined;
   const status = String(t.status ?? "").toLowerCase();
-  // Playwright's messages carry terminal colour codes (`\x1b[2m…\x1b[22m`) and
-  // start with their own type ("Error: …"); shown as-is they rendered as
-  // "Error: Error: [2mexpect([22m…".
-  let message = stripAnsi(String(t.errorMessage ?? err?.message ?? ""));
-  const prefixed = message.match(/^((?:[A-Z][A-Za-z]*)?Error):\s*/);
-  if (prefixed) message = message.slice(prefixed[0].length);
+  const { message, type: prefixedType } = splitErrorMessage(t.errorMessage ?? err?.message ?? "");
   return {
     test_id: String(t.testId ?? t.id ?? ""),
     // `action` is the step label — the last resort when a row carries no test title.
@@ -308,7 +340,7 @@ function toFailure(t: Record<string, unknown>): TestFailure {
     suite: String(t.suite ?? t.specFile ?? ""),
     // The platform sends no error TYPE: take it from the message's own prefix,
     // else infer the one thing that is knowable rather than labelling a timeout "Error".
-    error_type: String(err?.type ?? prefixed?.[1] ?? (status === "timedout" ? "TimeoutError" : "Error")),
+    error_type: String(err?.type ?? prefixedType ?? (status === "timedout" ? "TimeoutError" : "Error")),
     error_message: message,
     stack_trace: stripAnsi(String(t.stackTrace ?? err?.stack ?? "")),
     duration_ms: Number(t.durationMs ?? t.duration ?? 0),
@@ -349,6 +381,76 @@ function dedupeFailuresByTest(failures: TestFailure[]): TestFailure[] {
     }
   }
   return out;
+}
+
+/**
+ * Failures read off the timeline alone: the fallback when the run has no repo
+ * id, so its per-test list cannot be asked. A row is a step tagged with its
+ * ATTEMPT's status, so this counts a test that failed and then passed on retry,
+ * and misses failures past the platform's 1000-row cap.
+ */
+function failuresFromTimeline(rows: Array<Record<string, unknown>>): TestFailure[] {
+  // A timed-out test is a failure the caller cares about, and the platform
+  // normalizes Playwright's `timedOut` to `timedout` — filtering on "failed"
+  // alone silently dropped them.
+  const FAILED = new Set(["failed", "timedout"]);
+  const failures = rows
+    .filter((t) => FAILED.has(String(t.status ?? "").toLowerCase()))
+    .map((t) => toFailure(t));
+  return dedupeFailuresByTest(failures);
+}
+
+/**
+ * The statuses cloud-platform-app counts as `failed` when it tallies a run's
+ * tests (shared/outcome.ts `outcomeBucket`). Using the same set keeps our count
+ * equal to the platform's own `failed` for the same list. A flaky test (status
+ * `flaky`, or `passed` after a retry) never has one of these final statuses.
+ */
+const FINAL_FAILED_STATUSES = new Set(["failed", "timedout", "error", "broken", "interrupted"]);
+
+const hasText = (v: unknown): boolean => typeof v === "string" && v.trim() !== "";
+
+/**
+ * The timeline step that best explains each test's failure, by test id. Rows
+ * come in time order, so a later row wins and the final attempt's step is kept.
+ * A row with a stack trace beats a later row that has only a message.
+ */
+function failingStepByTest(rows: Array<Record<string, unknown>>): Map<string, Record<string, unknown>> {
+  const out = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const id = String(row.testId ?? "");
+    if (!id || !(hasText(row.stackTrace) || hasText(row.errorMessage))) continue;
+    const prev = out.get(id);
+    if (!prev || hasText(row.stackTrace) || !hasText(prev.stackTrace)) out.set(id, row);
+  }
+  return out;
+}
+
+/**
+ * Project one run-tests row (one test, attempts already folded) onto a
+ * `TestFailure`. The row carries the test-level message, duration and retry
+ * count. The stack trace, screenshot and video offset come from the test's
+ * failing timeline step, when the step stream holds it.
+ */
+function runTestToFailure(t: PlatformRunTest, step?: Record<string, unknown>): TestFailure {
+  const status = String(t.status ?? "").toLowerCase();
+  const { message, type } = splitErrorMessage(
+    hasText(t.failureMessage) ? t.failureMessage : (step?.errorMessage ?? ""),
+  );
+  return {
+    test_id: String(t.testId ?? ""),
+    test_name: String(t.title || step?.testTitle || ""),
+    suite: String(t.suite || step?.specFile || ""),
+    error_type: type ?? (status === "timedout" ? "TimeoutError" : "Error"),
+    error_message: message,
+    stack_trace: stripAnsi(String(step?.stackTrace ?? "")),
+    duration_ms: Number(t.durationMs ?? 0),
+    retry_count: Number(t.retryCount ?? t.retry ?? 0),
+    video_url: "",
+    // `videoOffset` is SECONDS from the start of the recording; this field is ms.
+    video_timestamp_ms: step?.videoOffset == null ? 0 : Number(step.videoOffset) * 1000,
+    screenshot_url: String(step?.screenshotUrl ?? ""),
+  };
 }
 
 function collection<T>(payload: unknown, key: string): T[] | undefined {
@@ -895,21 +997,38 @@ export function legacyTestRelicAdapter(cloud: CloudOps) {
     }) => cloud.listRuns(p),
     getRun: (runId: string) => cloud.getRun(runId),
     async getRunFailures(runId: string): Promise<RunFailuresResponse> {
-      // Synthesize failures by asking the platform for run tests across all repos.
-      // We don't know repoId here; use org-wide timeline as a fallback.
-      const timeline = await cloud.getRunTimeline(runId).catch(() => ({ timeline: [] as Array<Record<string, unknown>> }));
-      // Defensive: getRunTimeline already normalizes to an array, but never let a
-      // malformed shape reach `.filter` (this was the "Cannot read properties of
-      // undefined (reading 'filter')" crash in tr_replay_failure — TEAI-262).
-      const rows = Array.isArray(timeline?.timeline) ? timeline.timeline : [];
-      // A timed-out test is a failure the caller cares about, and the platform
-      // normalizes Playwright's `timedOut` to `timedout` — filtering on "failed"
-      // alone silently dropped them.
-      const FAILED = new Set(["failed", "timedout"]);
-      const failures = rows
-        .filter((t) => FAILED.has(String(t.status ?? "").toLowerCase()))
-        .map((t) => toFailure(t));
-      return { run_id: runId, failures: dedupeFailuresByTest(failures) };
+      // Which tests failed is read from the run's per-test list. The platform
+      // folds every attempt into one row whose status is the final attempt's,
+      // and counts its own `failed` from those rows. Counting failed rows of the
+      // timeline instead gave a number that never matched the run (TEAI-381):
+      // a test that failed and then passed on retry was counted (the run calls it
+      // flaky), failures past the timeline's 1000-row cap were lost, and rows
+      // with no test id were counted once per step. The list is keyed by repo,
+      // and only the run knows its repo.
+      //
+      // The timeline is still fetched, alongside: it is the fallback when there
+      // is no repo id or no list, and the only source of the list's stack traces.
+      const timeline = cloud
+        .getRunTimeline(runId)
+        // Defensive: getRunTimeline already normalizes to an array, but never let a
+        // malformed shape reach `.filter` (this was the "Cannot read properties of
+        // undefined (reading 'filter')" crash in tr_replay_failure — TEAI-262).
+        .then((t) => (Array.isArray(t?.timeline) ? t.timeline : []))
+        .catch(() => [] as Array<Record<string, unknown>>);
+      const repoId = await cloud.getRun(runId).then((r) => r.project_id, () => "");
+      // `collection` also rejects a 200 that is not the list (TEAI-376).
+      const tests = repoId
+        ? collection<PlatformRunTest>(await cloud.getRunTests(repoId, runId).catch(() => undefined), "tests")
+        : undefined;
+      const rows = await timeline;
+      // An EMPTY list means the platform found no per-test rows at all, not
+      // that nothing failed, so the timeline still gets its say.
+      if (!tests?.length) return { run_id: runId, failures: failuresFromTimeline(rows) };
+      const steps = failingStepByTest(rows);
+      const failures = tests
+        .filter((t) => FINAL_FAILED_STATUSES.has(String(t.status ?? "").toLowerCase()))
+        .map((t) => runTestToFailure(t, steps.get(String(t.testId))));
+      return { run_id: runId, failures };
     },
     async getFlakyTests(p: { project_id?: string; days?: number; threshold?: number }): Promise<{
       data: FlakyTest[];
