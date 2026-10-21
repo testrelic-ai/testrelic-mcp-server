@@ -251,6 +251,14 @@ router.get("/runs/:runId/artifacts/:artifactId/url", (req: Request, res: Respons
 });
 
 // ── /api/v1/repos/:repoId/runs/:runId/tests ────────────────────────────────
+// Mirrors the PLATFORM's `TestCasesResponse` (cloud-platform-app
+// shared/types/run.ts, dashboard-repo.controller getRunTests): ONE row per test
+// with its attempts folded in, so `status`/`durationMs` are the FINAL attempt's,
+// plus `retryCount`, `attempts` and `failureMessage` (the SDK's failure.message,
+// which starts with its own type). There is NO failure object and NO stack on
+// this list. This mock used to send a `failure` object with the stack, which
+// the real endpoint does not have. Counts are tallied from the rows, like the
+// platform does.
 router.get("/repos/:repoId/runs/:runId/tests", (req: Request, res: Response) => {
   const { runId } = req.params;
   const run = mockRuns.find((r) => r.run_id === runId);
@@ -262,23 +270,23 @@ router.get("/repos/:repoId/runs/:runId/tests", (req: Request, res: Response) => 
     status: "failed",
     durationMs: f.duration_ms,
     retry: f.retry_count,
-    failure: {
-      errorType: f.error_type,
-      errorMessage: f.error_message,
-      stackTrace: f.stack_trace,
-      videoUrl: f.video_url,
-      screenshotUrl: f.screenshot_url,
-    },
+    retryCount: f.retry_count,
+    retryStatus: null,
+    attempts: Array.from({ length: f.retry_count + 1 }, (_, retry) => ({ retry, status: "failed", durationMs: f.duration_ms })),
+    failureMessage: `${f.error_type}: ${f.error_message}`,
   }));
   res.json({
+    tests,
     runId,
-    total: run?.total ?? tests.length,
-    passed: run?.passed ?? 0,
-    failed: run?.failed ?? tests.length,
-    skipped: run?.skipped ?? 0,
+    total: tests.length,
+    passed: 0,
+    failed: tests.length,
+    skipped: 0,
+    flaky: 0,
     branch: run?.branch ?? null,
     commit: run?.commit_sha ?? null,
-    tests,
+    commitMessage: null,
+    environment: null,
   });
 });
 

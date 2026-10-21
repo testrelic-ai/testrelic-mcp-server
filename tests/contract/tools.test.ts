@@ -252,6 +252,33 @@ describe("contract: triage capability", () => {
       await stop();
     }
   });
+
+  /**
+   * TEAI-381: failures come from the run's per-test list. The mock serves that
+   * list in the platform's shape (`failureMessage`, `retryCount`, no stack), and
+   * the stack still arrives, from the timeline.
+   */
+  it("tr_diagnose_run reads the per-test list: message, stack and retries survive", async () => {
+    const { stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_diagnose_run")!;
+      const r = await tool.handler({ run_id: "RUN-2847" }, __ctx);
+      const failures = (r.structured as { failures: Array<Record<string, unknown>> }).failures;
+      expect(r.text).toContain(`### Failures (${failures.length})`);
+      expect(failures.length).toBe(5);
+      for (const f of failures) {
+        expect(f.error_message).not.toBe("");
+        expect(f.stack_trace).not.toBe("");
+      }
+      expect(failures.find((f) => f.test_id === "TEST-checkout-001")).toMatchObject({
+        error_type: "TimeoutError",
+        retry_count: 2,
+        duration_ms: 30142,
+      });
+    } finally {
+      await stop();
+    }
+  });
 });
 
 describe("contract: memory capability", () => {
