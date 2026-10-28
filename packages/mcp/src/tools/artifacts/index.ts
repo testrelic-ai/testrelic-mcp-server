@@ -63,7 +63,7 @@ export const artifactsTools: ToolDefinition[] = [
       id: z.string(),
       type: z.string(),
       title: z.string(),
-      payload: z.record(z.unknown()),
+      payload: z.record(z.string(), z.unknown()),
       createdAt: z.string(),
     },
     handler: async (input, ctx) => {
