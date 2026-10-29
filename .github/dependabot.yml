@@ -12,6 +12,11 @@ updates:
     target-branch: stage
     schedule:
       interval: weekly
+    # Version updates wait 7 days after a release (the sdk's pnpm
+    # minimumReleaseAge), so a compromised publish is usually pulled before a
+    # PR proposes it. Security updates are not delayed by cooldown.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 8
     labels:
       - dependencies
@@ -24,6 +29,8 @@ updates:
     target-branch: stage
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     labels:
       - dependencies
       - ci

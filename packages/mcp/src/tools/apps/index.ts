@@ -23,7 +23,7 @@ const AppCatalogEntry = z.object({
 const ActionEntry = z.object({
   name: z.string(),
   description: z.string(),
-  inputSchema: z.record(z.unknown()),
+  inputSchema: z.record(z.string(), z.unknown()),
 });
 
 export const appsTools: ToolDefinition[] = [
@@ -121,13 +121,13 @@ export const appsTools: ToolDefinition[] = [
     inputSchema: {
       app: z.string().describe("App slug from `tr_apps_list`"),
       action: z.string().describe("Action name from `tr_apps_list_actions`"),
-      args: z.record(z.unknown()).describe("Action-specific arguments per the action's inputSchema"),
+      args: z.record(z.string(), z.unknown()).describe("Action-specific arguments per the action's inputSchema"),
     },
     outputSchema: {
       ok: z.boolean(),
       app: z.string(),
       action: z.string(),
-      result: z.record(z.unknown()),
+      result: z.record(z.string(), z.unknown()),
     },
     handler: async (input, ctx) => {
       const app = String(input.app);

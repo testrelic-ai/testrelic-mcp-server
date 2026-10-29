@@ -18,7 +18,7 @@ import type { ToolDefinition } from "../../registry/index.js";
 const ArtifactSummary = z.object({
   id: z.string().optional(),
   type: z.string(),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
 });
 
 const ConversationSummary = z.object({
@@ -33,7 +33,7 @@ const Message = z.object({
   id: z.string().optional(),
   role: z.string(),
   content: z.string(),
-  artifacts: z.array(z.record(z.unknown())).optional(),
+  artifacts: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 
 export const aiTools: ToolDefinition[] = [
@@ -52,7 +52,7 @@ export const aiTools: ToolDefinition[] = [
           description: z.string(),
           output: z.enum(["text", "artifact"]),
           artifactType: z.string().optional(),
-          inputSchema: z.record(z.unknown()),
+          inputSchema: z.record(z.string(), z.unknown()),
         }),
       ),
     },
@@ -84,10 +84,10 @@ export const aiTools: ToolDefinition[] = [
       "Invokes any AI tool by name. Body: { tool_name, input }. Returns { result, artifact? }. When the tool produces an artifact (dashboard, report, test_plan, presentation, navigation_paths, session_workspace), the artifact is also addressable as `testrelic://artifacts/{id}` after the call. This is also how you generate artifacts: pass tool_name `generate_dashboard`, `generate_report`, `generate_test_plan`, `generate_presentation`, or `generate_navigation_paths` (these replaced the removed `tr_generate_*` tools).",
     inputSchema: {
       tool_name: z.string().describe("Tool name from `tr_ai_list_tools` (e.g. query_test_runs, query_jira_issues, generate_report)"),
-      input: z.record(z.unknown()).describe("Tool-specific input"),
+      input: z.record(z.string(), z.unknown()).describe("Tool-specific input"),
     },
     outputSchema: {
-      result: z.record(z.unknown()),
+      result: z.record(z.string(), z.unknown()),
       artifact: ArtifactSummary.optional(),
     },
     handler: async (input, ctx) => {

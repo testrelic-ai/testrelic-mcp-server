@@ -33,7 +33,7 @@ const MemoryEntry = z.object({
 
 const MemoryStats = z.object({
   total: z.number(),
-  byCategory: z.record(z.number()),
+  byCategory: z.record(z.string(), z.number()),
   mappedToTests: z.number(),
   unmatchedTests: z.number(),
 });

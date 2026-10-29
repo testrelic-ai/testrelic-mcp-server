@@ -139,7 +139,7 @@ export const marketplaceTools: ToolDefinition[] = [
       "Validates credentials for an apikey / basic / pat app without writing them. Returns { ok, error? }. Use this before `tr_marketplace_connect` to surface auth issues without side effects.",
     inputSchema: {
       slug: z.string(),
-      credentials: z.record(z.string()),
+      credentials: z.record(z.string(), z.string()),
     },
     outputSchema: { ok: z.boolean(), error: z.string().optional() },
     handler: async (input, ctx) => {
@@ -161,7 +161,7 @@ export const marketplaceTools: ToolDefinition[] = [
       "Installs an apikey / basic / pat app. For OAuth apps, use `tr_marketplace_start_oauth` instead. Body: { slug, credentials } — keys must match the app's configFields. Returns { ok, id }.",
     inputSchema: {
       slug: z.string(),
-      credentials: z.record(z.string()),
+      credentials: z.record(z.string(), z.string()),
     },
     outputSchema: { ok: z.boolean(), id: z.string() },
     handler: async (input, ctx) => {
@@ -210,12 +210,12 @@ export const marketplaceTools: ToolDefinition[] = [
     inputSchema: {
       slug: z.string(),
       operation: z.string(),
-      args: z.record(z.unknown()),
+      args: z.record(z.string(), z.unknown()),
     },
     outputSchema: {
       ok: z.boolean(),
       operation: z.string(),
-      result: z.record(z.unknown()),
+      result: z.record(z.string(), z.unknown()),
     },
     handler: async (input, ctx) => {
       const slug = String(input.slug);

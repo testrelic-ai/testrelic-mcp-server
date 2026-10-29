@@ -50,19 +50,24 @@ jobs:
       pull-requests: read
     steps:
       - name: Only main, or a branch with an open PR into main, may deploy prod
+        # Branch names may carry shell metacharacters, so the ref reaches the
+        # script as data (env), never spliced into its source.
         env:
           GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          if [ "$REF" = "refs/heads/main" ]; then
             echo "ref is main — allowed"; exit 0
           fi
-          OPEN=$(gh pr list --repo "${{ github.repository }}" \
-                   --head "${{ github.ref_name }}" --base main \
+          OPEN=$(gh pr list --repo "$REPO" \
+                   --head "$REF_NAME" --base main \
                    --state open --json number --jq 'length')
           if [ "${OPEN:-0}" -gt 0 ]; then
-            echo "branch '${{ github.ref_name }}' has an open PR into main — allowed"; exit 0
+            echo "branch '$REF_NAME' has an open PR into main — allowed"; exit 0
           fi
-          echo "::error::Refusing to deploy prod from '${{ github.ref_name }}': not main and no open PR into main."
+          echo "::error::Refusing to deploy prod from '$REF_NAME': not main and no open PR into main."
           exit 1
 
   # ───────────────────────────────────────────────────────────────────────
