@@ -47,8 +47,12 @@ COPY --from=builder /app/packages/mcp/README.md ./packages/mcp/README.md
 # Default caches in a writable location.
 ENV TESTRELIC_MCP_CACHE_DIR=/data/cache
 ENV TESTRELIC_MCP_OUTPUT_DIR=/data/output
+# The server runs as the image's unprivileged `node` user; /data is the only
+# place it writes (cache + output), so that is the only tree it owns.
+RUN mkdir -p /data/cache /data/output && chown -R node:node /data
 VOLUME ["/data"]
 
 EXPOSE 3000
+USER node
 ENTRYPOINT ["node", "packages/mcp/dist/cli.js"]
 CMD ["--port", "3000", "--host", "0.0.0.0"]

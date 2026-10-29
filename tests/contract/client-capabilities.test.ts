@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SamplingBridge } from "../../packages/mcp/src/sampling/bridge.js";
 import { Elicitor } from "../../packages/mcp/src/elicit/ask.js";
+import { zodToJsonSchema } from "../../packages/mcp/src/elicit/zod-to-json.js";
 
 /**
  * TEAI-375 follow-up — on hosted stage every sampling tool (tr_generate_test,
@@ -84,5 +85,35 @@ describe("server→client requests respect declared client capabilities", () => 
     const { server } = stubServer(undefined);
     expect(await within(new SamplingBridge(server).createMessage("x"))).toMatchObject({ fallback: true });
     expect(await within(new Elicitor(server).ask({ message: "x", schema: z.object({}) }))).toEqual({ kind: "unsupported" });
+  });
+});
+
+/**
+ * The elicitation request's `requestedSchema` comes from our own converter,
+ * which reads zod internals. A zod major upgrade changes those internals
+ * without a type error (they are reached through casts), and every schema
+ * then degrades to `{type:"object"}`.
+ */
+describe("elicitation requestedSchema", () => {
+  it("converts the shapes tools elicit with", () => {
+    const schema = z.object({
+      prd: z.string().optional(),
+      count: z.number(),
+      ok: z.boolean().default(false),
+      mode: z.enum(["fast", "full"]),
+      tags: z.array(z.string()),
+    });
+
+    expect(zodToJsonSchema(schema)).toEqual({
+      type: "object",
+      properties: {
+        prd: { type: "string" },
+        count: { type: "number" },
+        ok: { type: "boolean" },
+        mode: { type: "string", enum: ["fast", "full"] },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["count", "mode", "tags"],
+    });
   });
 });

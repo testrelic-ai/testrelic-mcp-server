@@ -82,8 +82,9 @@ jobs:
         if: steps.skip-check.outputs.already_published == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_Publish_Token }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
             npm publish --workspace @testrelic/mcp --access public --dry-run
           else
             npm publish --workspace @testrelic/mcp --access public --provenance
