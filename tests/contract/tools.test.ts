@@ -279,6 +279,36 @@ describe("contract: triage capability", () => {
       await stop();
     }
   });
+
+  /**
+   * test_id/test_name ride alongside `classification` so a caller building a
+   * UI card from just this result (no access to the original call's
+   * arguments) still knows which test the decision is about. test_name is
+   * null — not omitted, not the empty string — when there was no failure to
+   * name; test_id always echoes the input, found or not.
+   */
+  it("tr_classify_failure returns test_id/test_name alongside classification, found or not", async () => {
+    const { stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_classify_failure")!;
+
+      const found = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-checkout-002" }, __ctx)) as {
+        structured: { classification: unknown; test_id: string; test_name: string | null };
+      };
+      expect(found.structured.test_id).toBe("TEST-checkout-002");
+      expect(found.structured.test_name).toBeTruthy();
+      expect(found.structured.classification).not.toBeNull();
+
+      const notFound = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-does-not-exist" }, __ctx)) as {
+        structured: { classification: unknown; test_id: string; test_name: string | null };
+      };
+      expect(notFound.structured.test_id).toBe("TEST-does-not-exist");
+      expect(notFound.structured.test_name).toBeNull();
+      expect(notFound.structured.classification).toBeNull();
+    } finally {
+      await stop();
+    }
+  });
 });
 
 describe("contract: memory capability", () => {
