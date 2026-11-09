@@ -460,7 +460,14 @@ export const triageTools: ToolDefinition[] = [
     // Nullable: an unknown test_id is a legitimate answer (mirrors
     // tr_diagnose_run's RUN_SHAPE.nullable() for an unknown run_id), not an
     // error — every branch below emits the same `classification` key.
-    outputSchema: { classification: TIER0_CLASSIFICATION_SHAPE.nullable() },
+    // test_id/test_name ride alongside it — a caller (or a renderer building a
+    // UI card from just this result) has no other way to know which test the
+    // decision is about; test_name is null when there was no failure to name.
+    outputSchema: {
+      classification: TIER0_CLASSIFICATION_SHAPE.nullable(),
+      test_id: z.string(),
+      test_name: z.string().nullable(),
+    },
     handler: async (input, ctx) => {
       const run_id = input.run_id as string;
       const test_id = input.test_id as string;
@@ -472,7 +479,7 @@ export const triageTools: ToolDefinition[] = [
       if (!failure) {
         return {
           text: `No failure found for test_id "${test_id}" in run ${run_id} — nothing to classify.`,
-          structured: { classification: null },
+          structured: { classification: null, test_id, test_name: null },
         };
       }
       const flakiness = flakinessData.data.find((f) => f.test_id === test_id);
@@ -489,7 +496,7 @@ export const triageTools: ToolDefinition[] = [
         classification.decision === "defer"
           ? `## Tier 0 — ${failure.test_name}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold). Try tr_diagnose_run or tr_ai_rca for a fuller read.`
           : `## Tier 0 — ${failure.test_name}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
-      return { text, structured: { classification } };
+      return { text, structured: { classification, test_id, test_name: failure.test_name } };
     },
   },
   // `tr_list_runs` was removed in 3.3.0. It was a self-declared identical
