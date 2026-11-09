@@ -148,7 +148,7 @@ All tools are prefixed `tr_`. Use **only** these canonical names.
 `tr_analyze_diff` · `tr_risk_score` · `tr_select_tests`
 
 ### triage
-`tr_ai_rca` · `tr_compare_runs` · `tr_create_jira` · `tr_diagnose_run` · `tr_dismiss_flaky` · `tr_flaky_audit` · `tr_search_failures` · `tr_suggest_fix`
+`tr_ai_rca` · `tr_classify_failure` · `tr_compare_runs` · `tr_create_jira` · `tr_diagnose_run` · `tr_dismiss_flaky` · `tr_flaky_audit` · `tr_search_failures` · `tr_suggest_fix`
 
 ### signals
 `tr_affected_sessions` · `tr_production_signal` · `tr_user_impact`
@@ -171,7 +171,7 @@ All tools are prefixed `tr_`. Use **only** these canonical names.
 ### memory
 `tr_get_repo_memory` · `tr_list_repo_memories` · `tr_save_repo_memory`
 
-_66 tools across 13 capabilities._
+_67 tools across 13 capabilities._
 <!-- SKILL-TOOLS-END -->
 
 ### Deprecated aliases

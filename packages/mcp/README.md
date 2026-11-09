@@ -179,7 +179,7 @@ Ready-made prompts exposed to clients:
 
 _Auto-generated from `ALL_TOOLS`. Edit the tool source files, run `npm run build`, then `npm run update-readme`._
 
-**66 tools** across 13 capabilities. Only `core` is always on; the rest are opt-in via `--caps` / `TESTRELIC_MCP_CAPS`.
+**67 tools** across 13 capabilities. Only `core` is always on; the rest are opt-in via `--caps` / `TESTRELIC_MCP_CAPS`.
 
 | Capability | Tool | Purpose |
 |---|---|---|
@@ -242,6 +242,7 @@ _Auto-generated from `ALL_TOOLS`. Edit the tool source files, run `npm run build
 | `signals` | `tr_production_signal` | Query production logs (Loki) for a signal. Ad-hoc Loki LogQL query over a time window. Results are trimmed and cached (5 min TTL). |
 | `signals` | `tr_user_impact` | Correlate a run with user impact. Pulls Amplitude error-event counts for the run's dates and, given a LogQL `log_query`, matching Loki lines since the run started. Returns the business-level blast radius so the agent can prioritise. |
 | `triage` | `tr_ai_rca` | AI root cause analysis. Fetches the platform-generated RCA for a run (falls back to sampling when the platform has none). |
+| `triage` | `tr_classify_failure` | Classify a failure with Ostra Tier 0. Offline, no-network classification of why ONE test failed — flaky, product_bug, test_bug, environment, or selector_drift — with a calibrated confidence. Use when the user wants a fast first read on a single failure before reaching for tr_diagnose_run's full platform RCA or tr_ai_rca's sampled analysis: 'is this flaky or real', 'classify this failure', 'what kind of failure is this'. Honestly returns decision: "defer" (value: null) instead of guessing when under its confidence floor — a defer is a correct, useful answer, not a failed call; route to tr_diagnose_run or tr_ai_rca for those. PoC model trained on synthetic data (see testrelic-mcp-server's integration notes in ostra-tier0/QUESTIONS.md) — treat a confident call as a strong first read, not a verdict. |
 | `triage` | `tr_compare_runs` | Compare two runs. Diffs two runs for regressions, fixes, and persistent failures. |
 | `triage` | `tr_create_jira` | Create a Jira ticket (with dedupe). Creates or returns an existing Jira ticket for a run. Populates with RCA and user impact when available. |
 | `triage` | `tr_diagnose_run` | Diagnose a failing test run. Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure. |

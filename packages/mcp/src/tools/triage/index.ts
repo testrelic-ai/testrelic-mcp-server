@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { ToolDefinition } from "../../registry/index.js";
+import { classifyFailureWithTier0 } from "./tier0.js";
+import { TIER0_S1_MODEL } from "./tier0-model.js";
 
 /**
  * Triage capability — migration of the v1 tool set, plus one new entry
@@ -63,6 +65,18 @@ const FLAKINESS_SHAPE = z.object({
   p90_duration_ms: z.number(),
   run_count_7d: z.number(),
   failure_count_7d: z.number(),
+});
+
+// Ostra Tier 0 S1 — PoC synthetic training data, not yet retrained on real
+// TestRelic run data (see ostra-tier0/QUESTIONS.md). `decision` is "defer"
+// (not one of the 5 classes) when the model is under its confidence floor —
+// deliberately, not an error: it means "don't trust a guess here."
+const TIER0_CLASSIFICATION_SHAPE = z.object({
+  task: z.string(),
+  decision: z.string(),
+  value: z.string().nullable(),
+  p: z.number(),
+  probabilities: z.record(z.string(), z.number()),
 });
 
 export const triageTools: ToolDefinition[] = [
@@ -431,6 +445,51 @@ export const triageTools: ToolDefinition[] = [
         `Alerts and failure noise from this test will be suppressed until the flag is cleared in the TestRelic dashboard.`,
       ].join("\n");
       return { text, structured: { ok: true, test_id: result.test_id } };
+    },
+  },
+  {
+    name: "tr_classify_failure",
+    capability: "triage",
+    title: "Classify a failure with Ostra Tier 0",
+    description:
+      "Offline, no-network classification of why ONE test failed — flaky, product_bug, test_bug, environment, or selector_drift — with a calibrated confidence. Use when the user wants a fast first read on a single failure before reaching for tr_diagnose_run's full platform RCA or tr_ai_rca's sampled analysis: 'is this flaky or real', 'classify this failure', 'what kind of failure is this'. Honestly returns decision: \"defer\" (value: null) instead of guessing when under its confidence floor — a defer is a correct, useful answer, not a failed call; route to tr_diagnose_run or tr_ai_rca for those. PoC model trained on synthetic data (see testrelic-mcp-server's integration notes in ostra-tier0/QUESTIONS.md) — treat a confident call as a strong first read, not a verdict.",
+    inputSchema: {
+      run_id: z.string(),
+      test_id: z.string(),
+    },
+    // Nullable: an unknown test_id is a legitimate answer (mirrors
+    // tr_diagnose_run's RUN_SHAPE.nullable() for an unknown run_id), not an
+    // error — every branch below emits the same `classification` key.
+    outputSchema: { classification: TIER0_CLASSIFICATION_SHAPE.nullable() },
+    handler: async (input, ctx) => {
+      const run_id = input.run_id as string;
+      const test_id = input.test_id as string;
+      const [failuresData, flakinessData] = await Promise.all([
+        ctx.clients.testrelic.getRunFailures(run_id).catch(() => ({ run_id, failures: [] })),
+        ctx.clients.clickhouse.queryFlakinessScores(run_id).catch(() => ({ data: [], rows: 0 })),
+      ]);
+      const failure = failuresData.failures.find((f) => f.test_id === test_id);
+      if (!failure) {
+        return {
+          text: `No failure found for test_id "${test_id}" in run ${run_id} — nothing to classify.`,
+          structured: { classification: null },
+        };
+      }
+      const flakiness = flakinessData.data.find((f) => f.test_id === test_id);
+      // Diff/DOM evidence (AUG-11's full capture-adapter shape) isn't available
+      // from run/test ids alone — those features stay missing in tier0.ts,
+      // never guessed at 0.
+      const classification = classifyFailureWithTier0(TIER0_S1_MODEL, {
+        errorMessage: failure.error_message,
+        flakeRate50: flakiness?.flakiness_score,
+        runs50: flakiness?.run_count_7d,
+        failedCount50: flakiness?.failure_count_7d,
+      });
+      const text =
+        classification.decision === "defer"
+          ? `## Tier 0 — ${failure.test_name}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold). Try tr_diagnose_run or tr_ai_rca for a fuller read.`
+          : `## Tier 0 — ${failure.test_name}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
+      return { text, structured: { classification } };
     },
   },
   // `tr_list_runs` was removed in 3.3.0. It was a self-declared identical
