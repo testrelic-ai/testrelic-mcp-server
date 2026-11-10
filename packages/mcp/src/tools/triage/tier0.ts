@@ -186,3 +186,100 @@ export function tier0Decide(model: Tier0Model, features: Record<string, number>)
 export function classifyFailureWithTier0(model: Tier0Model, evidence: Tier0PlatformEvidence): Tier0Decision {
   return tier0Decide(model, buildTier0Features(evidence));
 }
+
+// ── S3 (selector survival) / S4 (impact) — AUG-19 heads, PoC depth. ──
+// `tier0Decide` above is already model-agnostic (classes/trees/base_score/
+// decision.defer_threshold all come from the model document), so these two
+// tracks only need their own feature builders — see ostra-tier0's
+// QUESTIONS.md finding #3 for how the models were trained and the two
+// class-imbalance bugs caught along the way. Feature order mirrors
+// ostra_tier0/schema.py's S3_NUMERIC_FEATURES / S4_NUMERIC_FEATURES exactly.
+
+const LOCATOR_STRATEGIES = ["css", "xpath", "test_id", "text", "role", "none"] as const;
+const S3_NUMERIC_FEATURES = [
+  "locator_strategy_code",
+  "dom_locator_found",
+  "history_releases_count",
+  "history_latest_resolve_rate",
+  "history_mean_resolve_rate",
+  "history_trend",
+] as const;
+const S4_NUMERIC_FEATURES = [
+  "diff_files_changed",
+  "diff_lines_added",
+  "diff_lines_removed",
+  "diff_touches_test_file",
+  "diff_touches_selector_file",
+  "candidate_co_change_rate",
+  "candidate_historical_fail_rate",
+] as const;
+
+export type Tier0SelectorSurvivalClass = "survives" | "breaks";
+export type Tier0ImpactClass = "not_impacted" | "impacted";
+
+function boolToNum(v: boolean | undefined | null): number {
+  return v === undefined || v === null ? NaN : v ? 1 : 0;
+}
+
+/** Evidence the capture adapter (AUG-11's `LocatorContext`) would produce —
+ * no platform client derives this today, so it arrives as tool input
+ * verbatim rather than being fetched internally (unlike `tr_classify_failure`,
+ * which CAN derive its evidence from run/test ids). */
+export interface Tier0SelectorEvidence {
+  strategy?: (typeof LOCATOR_STRATEGIES)[number];
+  domLocatorFound?: boolean;
+  /** Per-release resolve rate, oldest first. Empty/absent when no history exists. */
+  history?: Array<{ release: string; resolveRate?: number }>;
+}
+
+export function buildTier0S3Features(evidence: Tier0SelectorEvidence): Record<string, number> {
+  const rates = (evidence.history ?? [])
+    .map((h) => h.resolveRate)
+    .filter((r): r is number => r !== undefined && r !== null);
+  const f: Record<string, number> = {
+    locator_strategy_code: codeOf(evidence.strategy, LOCATOR_STRATEGIES),
+    dom_locator_found: boolToNum(evidence.domLocatorFound),
+    history_releases_count: evidence.history?.length ?? 0,
+    history_latest_resolve_rate: rates.length ? rates[rates.length - 1]! : NaN,
+    history_mean_resolve_rate: rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : NaN,
+    history_trend: rates.length >= 2 ? rates[rates.length - 1]! - rates[0]! : NaN,
+  };
+  const ordered: Record<string, number> = {};
+  for (const k of S3_NUMERIC_FEATURES) ordered[k] = f[k] as number;
+  return ordered;
+}
+
+export function predictSelectorSurvival(model: Tier0Model, evidence: Tier0SelectorEvidence): Tier0Decision {
+  return tier0Decide(model, buildTier0S3Features(evidence));
+}
+
+/** Evidence the capture adapter (AUG-11's `S4Payload`, one candidate) would
+ * produce — same "arrives as tool input verbatim" reasoning as S3 above. */
+export interface Tier0ImpactEvidence {
+  diffFilesChanged?: number;
+  diffLinesAdded?: number;
+  diffLinesRemoved?: number;
+  diffTouchesTestFile?: boolean;
+  diffTouchesSelectorFile?: boolean;
+  coChangeRate?: number;
+  historicalFailRate?: number;
+}
+
+export function buildTier0S4Features(evidence: Tier0ImpactEvidence): Record<string, number> {
+  const f: Record<string, number> = {
+    diff_files_changed: numOrNaN(evidence.diffFilesChanged),
+    diff_lines_added: numOrNaN(evidence.diffLinesAdded),
+    diff_lines_removed: numOrNaN(evidence.diffLinesRemoved),
+    diff_touches_test_file: boolToNum(evidence.diffTouchesTestFile),
+    diff_touches_selector_file: boolToNum(evidence.diffTouchesSelectorFile),
+    candidate_co_change_rate: numOrNaN(evidence.coChangeRate),
+    candidate_historical_fail_rate: numOrNaN(evidence.historicalFailRate),
+  };
+  const ordered: Record<string, number> = {};
+  for (const k of S4_NUMERIC_FEATURES) ordered[k] = f[k] as number;
+  return ordered;
+}
+
+export function predictTestImpact(model: Tier0Model, evidence: Tier0ImpactEvidence): Tier0Decision {
+  return tier0Decide(model, buildTier0S4Features(evidence));
+}

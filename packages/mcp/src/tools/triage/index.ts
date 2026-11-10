@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { ToolDefinition } from "../../registry/index.js";
-import { classifyFailureWithTier0 } from "./tier0.js";
+import { classifyFailureWithTier0, predictSelectorSurvival, predictTestImpact } from "./tier0.js";
 import { TIER0_S1_MODEL } from "./tier0-model.js";
+import { TIER0_S3_MODEL } from "./tier0-s3-model.js";
+import { TIER0_S4_MODEL } from "./tier0-s4-model.js";
 
 /**
  * Triage capability — migration of the v1 tool set, plus one new entry
@@ -490,6 +492,81 @@ export const triageTools: ToolDefinition[] = [
           ? `## Tier 0 — ${failure.test_name}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold). Try tr_diagnose_run or tr_ai_rca for a fuller read.`
           : `## Tier 0 — ${failure.test_name}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
       return { text, structured: { classification } };
+    },
+  },
+  {
+    name: "tr_predict_selector_survival",
+    capability: "triage",
+    title: "Predict whether a locator survives the next release (Ostra Tier 0 S3)",
+    description:
+      "Offline, no-network prediction of whether a locator will still resolve after the next release — survives or breaks, with a calibrated confidence. Pass the locator's strategy, whether it currently resolves against the live DOM, and its per-release resolve-rate history (oldest first); this evidence isn't derivable from a run/test id alone, unlike tr_classify_failure, so it rides in as input. Honestly returns decision: \"defer\" (value: null) instead of guessing when under its confidence floor. PoC model trained on synthetic data, class-weighted for a deliberately rare `breaks` class (see ostra-tier0/QUESTIONS.md finding #3) — treat a confident call as a strong first read, not a verdict.",
+    inputSchema: {
+      locator_id: z.string().optional().describe("Caller's own identifier for this locator, echoed back for correlation"),
+      strategy: z.enum(["css", "xpath", "test_id", "text", "role", "none"]).optional(),
+      dom_locator_found: z.boolean().optional().describe("Does this locator currently resolve against the live DOM?"),
+      history: z
+        .array(z.object({ release: z.string(), resolve_rate: z.number().min(0).max(1).optional() }))
+        .optional()
+        .describe("Per-release resolve rate, oldest first"),
+    },
+    outputSchema: {
+      classification: TIER0_CLASSIFICATION_SHAPE,
+      locator_id: z.string().nullable(),
+    },
+    handler: async (input, _ctx) => {
+      const locator_id = (input.locator_id as string | undefined) ?? null;
+      const history = (input.history as Array<{ release: string; resolve_rate?: number }> | undefined)?.map((h) => ({
+        release: h.release,
+        resolveRate: h.resolve_rate,
+      }));
+      const classification = predictSelectorSurvival(TIER0_S3_MODEL, {
+        strategy: input.strategy as "css" | "xpath" | "test_id" | "text" | "role" | "none" | undefined,
+        domLocatorFound: input.dom_locator_found as boolean | undefined,
+        history,
+      });
+      const text =
+        classification.decision === "defer"
+          ? `## Tier 0 selector survival${locator_id ? ` — ${locator_id}` : ""}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold).`
+          : `## Tier 0 selector survival${locator_id ? ` — ${locator_id}` : ""}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
+      return { text, structured: { classification, locator_id } };
+    },
+  },
+  {
+    name: "tr_predict_test_impact",
+    capability: "triage",
+    title: "Predict whether a diff impacts a candidate test (Ostra Tier 0 S4)",
+    description:
+      "Offline, no-network prediction of whether a diff impacts one candidate test — impacted or not_impacted, with a calibrated confidence. Pass the diff's shape (files/lines changed, whether it touches test/selector files) and the candidate's historical co-change rate with those files plus its historical fail rate; this evidence isn't derivable from a run id alone, so it rides in as input. Different mechanism from tr_select_tests/tr_analyze_diff (coverage-map + Amplitude journey risk scoring) — this is a trained classifier over the Ostra Tier 0 capture-adapter shape, additive alongside those, not a replacement. Honestly returns decision: \"defer\" (value: null) instead of guessing when under its confidence floor. PoC model trained on synthetic data, class-weighted for a deliberately rare `impacted` class (see ostra-tier0/QUESTIONS.md finding #3).",
+    inputSchema: {
+      diff_files_changed: z.number().optional(),
+      diff_lines_added: z.number().optional(),
+      diff_lines_removed: z.number().optional(),
+      diff_touches_test_file: z.boolean().optional(),
+      diff_touches_selector_file: z.boolean().optional(),
+      test_id: z.string(),
+      co_change_rate: z.number().min(0).max(1).optional().describe("How often this test's file changes alongside the diff's files, historically"),
+      historical_fail_rate: z.number().min(0).max(1).optional().describe("How often this test fails on diffs shaped like this one, historically"),
+    },
+    outputSchema: {
+      classification: TIER0_CLASSIFICATION_SHAPE,
+      test_id: z.string(),
+    },
+    handler: async (input, _ctx) => {
+      const test_id = input.test_id as string;
+      const classification = predictTestImpact(TIER0_S4_MODEL, {
+        diffFilesChanged: input.diff_files_changed as number | undefined,
+        diffLinesAdded: input.diff_lines_added as number | undefined,
+        diffLinesRemoved: input.diff_lines_removed as number | undefined,
+        diffTouchesTestFile: input.diff_touches_test_file as boolean | undefined,
+        diffTouchesSelectorFile: input.diff_touches_selector_file as boolean | undefined,
+        coChangeRate: input.co_change_rate as number | undefined,
+        historicalFailRate: input.historical_fail_rate as number | undefined,
+      });
+      const text =
+        classification.decision === "defer"
+          ? `## Tier 0 test impact — ${test_id}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold).`
+          : `## Tier 0 test impact — ${test_id}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
+      return { text, structured: { classification, test_id } };
     },
   },
   // `tr_list_runs` was removed in 3.3.0. It was a self-declared identical
