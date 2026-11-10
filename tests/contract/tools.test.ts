@@ -373,6 +373,40 @@ describe("contract: triage capability", () => {
       await stop();
     }
   });
+
+  /**
+   * AUG-15 (ostra-tier0/QUESTIONS.md): a confirmed/corrected Studio label is
+   * only retrainable if the row it's persisted with carries the feature
+   * vector the model actually scored, not just the final label. `features`
+   * echoes exactly what `buildTier0Features` computed — found or not, same
+   * shape discipline as `classification`.
+   */
+  it("tr_classify_failure echoes the exact feature vector it scored, found or not", async () => {
+    const { stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_classify_failure")!;
+
+      const found = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-checkout-002" }, __ctx)) as {
+        structured: { classification: unknown; features: Record<string, number> | null };
+      };
+      expect(found.structured.classification).not.toBeNull();
+      expect(found.structured.features).not.toBeNull();
+      // "Timeout 30000ms exceeded..." classifies as error_class_code 0 (timeout,
+      // first entry in ERROR_CLASSES) — a concrete value, not just "is present".
+      expect(found.structured.features!.error_class_code).toBe(0);
+      // Diff/DOM evidence isn't derivable from run/test ids alone (tier0.ts's
+      // own documented limit) — missing stays missing (NaN), never a guessed 0.
+      expect(Number.isNaN(found.structured.features!.diff_files_changed)).toBe(true);
+
+      const notFound = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-does-not-exist" }, __ctx)) as {
+        structured: { classification: unknown; features: Record<string, number> | null };
+      };
+      expect(notFound.structured.classification).toBeNull();
+      expect(notFound.structured.features).toBeNull();
+    } finally {
+      await stop();
+    }
+  });
 });
 
 describe("contract: memory capability", () => {
