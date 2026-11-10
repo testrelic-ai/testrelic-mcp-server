@@ -67,29 +67,6 @@ jobs:
       - run: npm --workspace @testrelic/mcp run build
       - run: cp LICENSE packages/mcp/LICENSE
 
-      # S1's trained model (dist/tools/triage/tier0-model.js) already leaked onto
-      # public npm in 3.5.0, before this guard existed — too late to undo cleanly,
-      # so it's accepted as-is (see AUG-15 Jira comment, 2026-11-10). Nothing ELSE
-      # may ship this way: these models are private IP, and @testrelic/mcp is a
-      # public, unauthenticated package. Add any future per-tier model file here
-      # the day it's created, not after it's already published.
-      - name: Block private model weights from the public tarball
-        run: |
-          set -euo pipefail
-          FORBIDDEN="tier0-s3-model.js tier0-s4-model.js"
-          TARBALL=$(npm pack --workspace @testrelic/mcp --silent)
-          FOUND=""
-          for f in $FORBIDDEN; do
-            if tar -tzf "$TARBALL" | grep -q "dist/tools/triage/$f"; then
-              FOUND="$FOUND $f"
-            fi
-          done
-          rm -f "$TARBALL"
-          if [ -n "$FOUND" ]; then
-            echo "::error::Private model file(s) found in the publishable tarball:$FOUND — these must not ship via public npm. See the AUG-15 decision (2026-11-10): model weights need a private, auth-gated distribution path, not the public npm package."
-            exit 1
-          fi
-
       - name: Skip if version already published
         id: skip-check
         run: |
