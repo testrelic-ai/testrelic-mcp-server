@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ToolDefinition } from "../../registry/index.js";
-import { classifyFailureWithTier0 } from "./tier0.js";
+import { buildTier0Features, classifyFailureWithTier0 } from "./tier0.js";
 import { TIER0_S1_MODEL } from "./tier0-model.js";
 
 /**
@@ -459,8 +459,15 @@ export const triageTools: ToolDefinition[] = [
     },
     // Nullable: an unknown test_id is a legitimate answer (mirrors
     // tr_diagnose_run's RUN_SHAPE.nullable() for an unknown run_id), not an
-    // error — every branch below emits the same `classification` key.
-    outputSchema: { classification: TIER0_CLASSIFICATION_SHAPE.nullable() },
+    // error — every branch below emits the same `classification`/`features` keys.
+    // `features` echoes the exact input vector the model scored — AUG-14's
+    // Studio review card persists it alongside a confirmed/corrected label so
+    // a future retrain has a real feature vector to train from, not just the
+    // final label (see ostra-tier0/QUESTIONS.md).
+    outputSchema: {
+      classification: TIER0_CLASSIFICATION_SHAPE.nullable(),
+      features: z.record(z.string(), z.number()).nullable(),
+    },
     handler: async (input, ctx) => {
       const run_id = input.run_id as string;
       const test_id = input.test_id as string;
@@ -472,24 +479,26 @@ export const triageTools: ToolDefinition[] = [
       if (!failure) {
         return {
           text: `No failure found for test_id "${test_id}" in run ${run_id} — nothing to classify.`,
-          structured: { classification: null },
+          structured: { classification: null, features: null },
         };
       }
       const flakiness = flakinessData.data.find((f) => f.test_id === test_id);
       // Diff/DOM evidence (AUG-11's full capture-adapter shape) isn't available
       // from run/test ids alone — those features stay missing in tier0.ts,
       // never guessed at 0.
-      const classification = classifyFailureWithTier0(TIER0_S1_MODEL, {
+      const evidence = {
         errorMessage: failure.error_message,
         flakeRate50: flakiness?.flakiness_score,
         runs50: flakiness?.run_count_7d,
         failedCount50: flakiness?.failure_count_7d,
-      });
+      };
+      const classification = classifyFailureWithTier0(TIER0_S1_MODEL, evidence);
+      const features = buildTier0Features(evidence);
       const text =
         classification.decision === "defer"
           ? `## Tier 0 — ${failure.test_name}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold). Try tr_diagnose_run or tr_ai_rca for a fuller read.`
           : `## Tier 0 — ${failure.test_name}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
-      return { text, structured: { classification } };
+      return { text, structured: { classification, features } };
     },
   },
   // `tr_list_runs` was removed in 3.3.0. It was a self-declared identical
