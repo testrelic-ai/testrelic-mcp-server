@@ -179,7 +179,7 @@ Ready-made prompts exposed to clients:
 
 _Auto-generated from `ALL_TOOLS`. Edit the tool source files, run `npm run build`, then `npm run update-readme`._
 
-**67 tools** across 13 capabilities. Only `core` is always on; the rest are opt-in via `--caps` / `TESTRELIC_MCP_CAPS`.
+**69 tools** across 13 capabilities. Only `core` is always on; the rest are opt-in via `--caps` / `TESTRELIC_MCP_CAPS`.
 
 | Capability | Tool | Purpose |
 |---|---|---|
@@ -248,6 +248,8 @@ _Auto-generated from `ALL_TOOLS`. Edit the tool source files, run `npm run build
 | `triage` | `tr_diagnose_run` | Diagnose a failing test run. Drill into one TEST RUN — pulls run metadata, every failing test, error messages, stack traces, and flakiness scores. Use this when the user says 'why did this test run fail', 'what failed in run X', 'tell me about the failures', 'investigate this build', 'show me errors for run …'. Set include_video to also surface video timestamp markers for each failure. |
 | `triage` | `tr_dismiss_flaky` | Dismiss a test as known flaky. Marks a test as known-flaky (suppresses alerts) with a required reason. |
 | `triage` | `tr_flaky_audit` | Flaky-test audit. Lists flaky tests in this org — tests whose pass/fail status changes between retries. Use when the user says 'show me flaky tests', 'which tests are unstable', 'why are these tests intermittent', 'flakiness report'. Ranks by flakiness score over a lookback window; pair with tr_dismiss_flaky to mark a test as known-flaky. |
+| `triage` | `tr_predict_selector_survival` | Predict whether a locator survives the next release (Ostra Tier 0 S3). Offline, no-network prediction of whether a locator will still resolve after the next release — survives or breaks, with a calibrated confidence. Pass the locator's strategy, whether it currently resolves against the live DOM, and its per-release resolve-rate history (oldest first); this evidence isn't derivable from a run/test id alone, unlike tr_classify_failure, so it rides in as input. Honestly returns decision: "defer" (value: null) instead of guessing when under its confidence floor. PoC model trained on synthetic data, class-weighted for a deliberately rare `breaks` class (see ostra-tier0/QUESTIONS.md finding #3) — treat a confident call as a strong first read, not a verdict. |
+| `triage` | `tr_predict_test_impact` | Predict whether a diff impacts a candidate test (Ostra Tier 0 S4). Offline, no-network prediction of whether a diff impacts one candidate test — impacted or not_impacted, with a calibrated confidence. Pass the diff's shape (files/lines changed, whether it touches test/selector files) and the candidate's historical co-change rate with those files plus its historical fail rate; this evidence isn't derivable from a run id alone, so it rides in as input. Different mechanism from tr_select_tests/tr_analyze_diff (coverage-map + Amplitude journey risk scoring) — this is a trained classifier over the Ostra Tier 0 capture-adapter shape, additive alongside those, not a replacement. Honestly returns decision: "defer" (value: null) instead of guessing when under its confidence floor. PoC model trained on synthetic data, class-weighted for a deliberately rare `impacted` class (see ostra-tier0/QUESTIONS.md finding #3). |
 | `triage` | `tr_search_failures` | Search failures by text. Searches recent failed runs for text matches across test names, error messages, and stack traces. |
 | `triage` | `tr_suggest_fix` | Platform-suggested fix. Returns the TestRelic platform's code-level fix suggestion for a named test in a run. |
 
