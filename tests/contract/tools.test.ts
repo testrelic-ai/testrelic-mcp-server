@@ -279,6 +279,134 @@ describe("contract: triage capability", () => {
       await stop();
     }
   });
+
+  /**
+   * AUG-19 S3 head, additive alongside tr_classify_failure. Evidence rides
+   * in as input (no platform client derives per-release resolve-rate
+   * history), so these assert on the evidence this tool was actually
+   * trained to key on — a stable high resolve rate vs. a sharply declining
+   * one plus a live-DOM miss — not on a lookup.
+   */
+  it("tr_predict_selector_survival: stable history -> confident survives, declining + DOM miss -> confident breaks", async () => {
+    const { stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_predict_selector_survival")!;
+
+      const stable = (await tool.handler(
+        {
+          locator_id: "checkout-submit",
+          strategy: "test_id",
+          dom_locator_found: true,
+          history: [
+            { release: "v1", resolve_rate: 0.98 },
+            { release: "v2", resolve_rate: 0.97 },
+            { release: "v3", resolve_rate: 0.99 },
+          ],
+        },
+        __ctx,
+      )) as { structured: { classification: { decision: string }; locator_id: string | null } };
+      expect(stable.structured.locator_id).toBe("checkout-submit");
+      expect(stable.structured.classification.decision).toBe("survives");
+
+      const declining = (await tool.handler(
+        {
+          strategy: "css",
+          dom_locator_found: false,
+          history: [
+            { release: "v1", resolve_rate: 0.95 },
+            { release: "v2", resolve_rate: 0.6 },
+            { release: "v3", resolve_rate: 0.2 },
+          ],
+        },
+        __ctx,
+      )) as { structured: { classification: { decision: string }; locator_id: string | null } };
+      expect(declining.structured.locator_id).toBeNull();
+      expect(declining.structured.classification.decision).toBe("breaks");
+    } finally {
+      await stop();
+    }
+  });
+
+  /**
+   * AUG-19 S4 head, additive alongside tr_select_tests/tr_analyze_diff (a
+   * different mechanism — coverage-map + Amplitude journey risk scoring).
+   * test_id always echoes the input, matching tr_classify_failure's
+   * identity-echo convention.
+   */
+  it("tr_predict_test_impact: high co-change-rate on a test-touching diff -> confident impacted, unrelated diff -> confident not_impacted", async () => {
+    const { stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_predict_test_impact")!;
+
+      const impacted = (await tool.handler(
+        {
+          test_id: "checkout.spec.ts",
+          diff_files_changed: 3,
+          diff_lines_added: 40,
+          diff_lines_removed: 10,
+          diff_touches_test_file: true,
+          diff_touches_selector_file: false,
+          co_change_rate: 0.9,
+          historical_fail_rate: 0.7,
+        },
+        __ctx,
+      )) as { structured: { classification: { decision: string }; test_id: string } };
+      expect(impacted.structured.test_id).toBe("checkout.spec.ts");
+      expect(impacted.structured.classification.decision).toBe("impacted");
+
+      const notImpacted = (await tool.handler(
+        {
+          test_id: "unrelated.spec.ts",
+          diff_files_changed: 1,
+          diff_lines_added: 2,
+          diff_lines_removed: 1,
+          diff_touches_test_file: false,
+          diff_touches_selector_file: false,
+          co_change_rate: 0.01,
+          historical_fail_rate: 0.02,
+        },
+        __ctx,
+      )) as { structured: { classification: { decision: string }; test_id: string } };
+      expect(notImpacted.structured.test_id).toBe("unrelated.spec.ts");
+      expect(notImpacted.structured.classification.decision).toBe("not_impacted");
+    } finally {
+      await stop();
+    }
+  });
+
+  /**
+   * AUG-15 (ostra-tier0/QUESTIONS.md): a confirmed/corrected Studio label is
+   * only retrainable if the row it's persisted with carries the feature
+   * vector the model actually scored, not just the final label. `features`
+   * echoes exactly what `buildTier0Features` computed — found or not, same
+   * shape discipline as `classification`.
+   */
+  it("tr_classify_failure echoes the exact feature vector it scored, found or not", async () => {
+    const { stop, __ctx } = await startInProcessServer({ capabilities: ["triage"] });
+    try {
+      const tool = ALL_TOOLS.find((t) => t.name === "tr_classify_failure")!;
+
+      const found = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-checkout-002" }, __ctx)) as {
+        structured: { classification: unknown; features: Record<string, number> | null };
+      };
+      expect(found.structured.classification).not.toBeNull();
+      expect(found.structured.features).not.toBeNull();
+      // "Timeout 30000ms exceeded..." classifies as error_class_code 0 (timeout,
+      // first entry in ERROR_CLASSES) — a concrete value, not just "is present".
+      expect(found.structured.features!.error_class_code).toBe(0);
+      // Diff/DOM evidence isn't derivable from run/test ids alone (tier0.ts's
+      // own documented limit) — missing stays missing (NaN), never a guessed 0.
+      expect(Number.isNaN(found.structured.features!.diff_files_changed)).toBe(true);
+
+      const notFound = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-does-not-exist" }, __ctx)) as {
+        structured: { classification: unknown; features: Record<string, number> | null };
+      };
+      expect(notFound.structured.classification).toBeNull();
+      expect(notFound.structured.features).toBeNull();
+    } finally {
+      await stop();
+    }
+  });
 });
 
 describe("contract: memory capability", () => {
