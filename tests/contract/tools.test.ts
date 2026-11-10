@@ -387,7 +387,12 @@ describe("contract: triage capability", () => {
       const tool = ALL_TOOLS.find((t) => t.name === "tr_classify_failure")!;
 
       const found = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-checkout-002" }, __ctx)) as {
-        structured: { classification: unknown; features: Record<string, number> | null };
+        structured: {
+          classification: unknown;
+          features: Record<string, number> | null;
+          test_id: string;
+          test_name: string | null;
+        };
       };
       expect(found.structured.classification).not.toBeNull();
       expect(found.structured.features).not.toBeNull();
@@ -397,12 +402,26 @@ describe("contract: triage capability", () => {
       // Diff/DOM evidence isn't derivable from run/test ids alone (tier0.ts's
       // own documented limit) — missing stays missing (NaN), never a guessed 0.
       expect(Number.isNaN(found.structured.features!.diff_files_changed)).toBe(true);
+      // test_id/test_name: input echoed, name resolved from the real fixture —
+      // what AUG-14's Studio review card needs to label itself without a
+      // second round trip (see mock-server/data/failures.ts for the fixture).
+      expect(found.structured.test_id).toBe("TEST-checkout-002");
+      expect(found.structured.test_name).toBe("Checkout > Payment > retries on transient gateway error");
 
       const notFound = (await tool.handler({ run_id: "RUN-2847", test_id: "TEST-does-not-exist" }, __ctx)) as {
-        structured: { classification: unknown; features: Record<string, number> | null };
+        structured: {
+          classification: unknown;
+          features: Record<string, number> | null;
+          test_id: string;
+          test_name: string | null;
+        };
       };
       expect(notFound.structured.classification).toBeNull();
       expect(notFound.structured.features).toBeNull();
+      // Even on a not-found path, test_id still echoes the input exactly —
+      // only test_name (which requires resolving the failure) is null.
+      expect(notFound.structured.test_id).toBe("TEST-does-not-exist");
+      expect(notFound.structured.test_name).toBeNull();
     } finally {
       await stop();
     }
