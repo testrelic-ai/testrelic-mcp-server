@@ -469,6 +469,13 @@ export const triageTools: ToolDefinition[] = [
     outputSchema: {
       classification: TIER0_CLASSIFICATION_SHAPE.nullable(),
       features: z.record(z.string(), z.number()).nullable(),
+      // Echoes the input test_id, and the test_name resolved from the run
+      // (null when there's no failure to resolve it from) — so a caller
+      // doesn't need a second round trip just to get the human-readable
+      // name, and so a Studio-style review card can label itself without
+      // re-deriving identity from the request it already sent.
+      test_id: z.string(),
+      test_name: z.string().nullable(),
     },
     handler: async (input, ctx) => {
       const run_id = input.run_id as string;
@@ -481,7 +488,7 @@ export const triageTools: ToolDefinition[] = [
       if (!failure) {
         return {
           text: `No failure found for test_id "${test_id}" in run ${run_id} — nothing to classify.`,
-          structured: { classification: null, features: null },
+          structured: { classification: null, features: null, test_id, test_name: null },
         };
       }
       const flakiness = flakinessData.data.find((f) => f.test_id === test_id);
@@ -500,7 +507,7 @@ export const triageTools: ToolDefinition[] = [
         classification.decision === "defer"
           ? `## Tier 0 — ${failure.test_name}\n\nNot confident enough to call this one (best guess ${(classification.p * 100).toFixed(0)}% — below the defer threshold). Try tr_diagnose_run or tr_ai_rca for a fuller read.`
           : `## Tier 0 — ${failure.test_name}\n\n**${classification.value}** at ${(classification.p * 100).toFixed(0)}% confidence.`;
-      return { text, structured: { classification, features } };
+      return { text, structured: { classification, features, test_id, test_name: failure.test_name } };
     },
   },
   {
