@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
-    "@types/vscode": "^1.80.0",
+    "@types/vscode": "^1.144.0",
     "rimraf": "^6.1.4",
     "typescript": "^7.0.2"
   }
