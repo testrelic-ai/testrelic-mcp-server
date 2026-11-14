@@ -198,12 +198,21 @@ jobs:
           # accepted at the edge and validated for real when the session
           # bootstraps against the platform — and each session gets its own
           # clients/bootstrap/cache keyed to that caller.
+          #
+          # Container memory is pinned to 1024 MiB (TEAI-518). At 512 the hard
+          # limit peaked at 92% (2026-09-01) and sat at or above 70% on 7 days,
+          # and an OOM kill drops every live MCP session. Terraform's prod_mcp
+          # says the same, but the service ignores task_definition, so THIS is
+          # what sets it. A task-level memory below 1024 would make the register
+          # call reject the container's, so it is raised with it when present.
           jq --arg IMAGE "$IMAGE" --arg HOSTS "${{ env.INGRESS_HOST }},new.${{ env.INGRESS_HOST }}" --arg CAPS "${{ env.MCP_CAPS }}" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
              | .containerDefinitions[0].image = $IMAGE
              | .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name != "TESTRELIC_MCP_PUBLIC_HOSTS")) + [{"name": "TESTRELIC_MCP_PUBLIC_HOSTS", "value": $HOSTS}])
              | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_CAPS")) + [{"name": "TESTRELIC_MCP_CAPS", "value": $CAPS}])
-             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_MULTI_TENANT")) + [{"name": "TESTRELIC_MCP_MULTI_TENANT", "value": "true"}])' \
+             | .containerDefinitions[0].environment = (.containerDefinitions[0].environment | map(select(.name != "TESTRELIC_MCP_MULTI_TENANT")) + [{"name": "TESTRELIC_MCP_MULTI_TENANT", "value": "true"}])
+             | .containerDefinitions[0].memory = 1024
+             | if .memory != null and ((.memory | tonumber) < 1024) then .memory = "1024" else . end' \
             /tmp/task-def.json > /tmp/task-def-updated.json
 
       - name: Register new task definition revision
